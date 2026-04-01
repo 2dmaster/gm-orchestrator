@@ -1,0 +1,10 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "projectId": "my-app",
+  "apiKey": "",
+  "timeoutMs": 900000,
+  "pauseMs": 2000,
+  "maxRetries": 1,
+  "claudeArgs": [],
+  "dryRun": false
+}

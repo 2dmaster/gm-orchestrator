@@ -1,0 +1,7 @@
+server:
+  port: 3001
+  host: 127.0.0.1
+
+projects:
+  gm-orchestrator-ts:
+    projectDir: "/home/vachick/PhpstormProjects/gm-orchestrator-ts"
