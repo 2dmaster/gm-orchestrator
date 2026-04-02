@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import type { OrchestratorConfig } from '../core/types.js';
 
@@ -38,6 +38,11 @@ export function validateConfig(config: OrchestratorConfig): asserts config is Or
     errors.forEach((e) => console.error(`❌ ${e}`));
     process.exit(1);
   }
+}
+
+export function saveConfig(config: Partial<OrchestratorConfig>): void {
+  const path = resolve(process.cwd(), CONFIG_FILE);
+  writeFileSync(path, JSON.stringify(config, null, 2) + '\n', 'utf8');
 }
 
 // ── Readers ───────────────────────────────────────────────────────────────

@@ -44,6 +44,15 @@ export interface Epic {
   updatedAt: string;
 }
 
+// ─── Permissions ─────────────────────────────────────────────────────────
+
+export interface Permissions {
+  writeFiles: boolean;
+  runCommands: string[];
+  blockedCommands: string[];
+  mcpTools: 'all' | 'none' | string[];
+}
+
 // ─── Orchestrator Config ──────────────────────────────────────────────────
 
 export interface OrchestratorConfig {
@@ -83,6 +92,20 @@ export interface SprintStats {
   skipped: number;
   durationMs: number;
 }
+
+// ─── WebSocket Event Types ───────────────────────────────────────────────
+
+export type ServerEvent =
+  | { type: 'run:started';   payload: { mode: 'sprint' | 'epic'; epicId?: string } }
+  | { type: 'run:stopped' }
+  | { type: 'run:complete';  payload: SprintStats }
+  | { type: 'task:started';  payload: { task: Task } }
+  | { type: 'task:done';     payload: { task: Task } }
+  | { type: 'task:cancelled'; payload: { task: Task; reason?: string } }
+  | { type: 'task:timeout';  payload: { task: Task } }
+  | { type: 'task:retrying'; payload: { task: Task; attempt: number } }
+  | { type: 'log:line';      payload: { taskId: string; line: string } }
+  | { type: 'error';         payload: { message: string } };
 
 // ─── Ports (interfaces for dependency injection + testability) ────────────
 

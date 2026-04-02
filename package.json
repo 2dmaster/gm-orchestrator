@@ -1,6 +1,6 @@
 {
   "name": "gm-orchestrator",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "Tokenless Claude Code orchestrator for GraphMemory — AI-first, TypeScript",
   "type": "module",
   "main": "dist/index.js",
@@ -22,14 +22,17 @@
   ],
   "scripts": {
     "dev": "tsx src/cli/index.ts",
-    "build": "tsc",
+    "build": "tsx scripts/build.ts",
+    "build:ts": "tsc",
     "start": "node dist/cli/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "build:ui": "cd ui && npm install && npm run build",
+    "dev:ui": "cd ui && npm run dev",
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
     "claude",
@@ -39,13 +42,17 @@
     "ai",
     "task-runner"
   ],
+  "author": "vachick <googdeev@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/vachick/gm-orchestrator-ts.git"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
+    "@types/node-notifier": "^8.0.5",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^2.1.8",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
@@ -53,5 +60,11 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "node-notifier": "^10.0.1",
+    "open": "^11.0.0",
+    "ws": "^8.20.0"
   }
 }
