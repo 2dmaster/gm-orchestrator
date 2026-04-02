@@ -1,36 +1,238 @@
 # gm-orchestrator
 
-Tokenless Claude Code orchestrator for GraphMemory — AI-first, TypeScript.
+Autonomous AI sprint runner for [GraphMemory](https://github.com/graph-memory/graphmemory).
 
-Spawns Claude Code sessions to work through tasks stored in GraphMemory, coordinating priorities, retries, and epic workflows automatically.
+Spawns Claude Code sessions to work through your tasks automatically — one task at a time,
+fresh context each session, no token bleed. You define the work in GraphMemory, hit Run, go do something else.
+
+```bash
+npm install -g gm-orchestrator
+gm-orchestrator
+```
+
+→ Opens `http://localhost:4242` in your browser. That's it.
+
+---
+
+## How it works
+
+```
+gm-orchestrator
+      ↓
+Reads tasks from GraphMemory (priority order, blockers respected)
+      ↓
+For each task:
+  spawn → claude --print "<task prompt>"
+  wait  → Claude calls tasks_move("done") when finished
+  next  → kill session, start fresh, repeat
+      ↓
+Notify you when sprint/epic is complete
+```
+
+Each Claude Code session gets a clean context window. No accumulation, no drift.
+
+---
+
+## Prerequisites
+
+- **Node.js** >= 18
+- **[GraphMemory](https://github.com/graph-memory/graphmemory)** running locally (`graphmemory serve`)
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** installed (`npm install -g @anthropic-ai/claude-code`)
+- Claude Code connected to your GraphMemory instance via MCP
+
+---
 
 ## Installation
 
 ```bash
-npm install gm-orchestrator
+npm install -g gm-orchestrator
 ```
 
-Requires Node.js >= 18.
+---
 
 ## Quick Start
 
-### CLI
-
 ```bash
-# Run all todo/in_progress tasks by priority
-npx gm-orchestrator sprint --project my-app
+# 1. Start GraphMemory in your project
+cd /path/to/your-project
+graphmemory serve
 
-# Run all tasks in an epic
-npx gm-orchestrator epic my-epic-id --project my-app
-
-# Check task counts without spawning Claude
-npx gm-orchestrator status --project my-app
-
-# Preview prompts without running Claude
-npx gm-orchestrator sprint --project my-app --dry-run
+# 2. Start gm-orchestrator
+gm-orchestrator
+# → opens http://localhost:4242
 ```
 
-### Programmatic
+On first run, the wizard walks you through selecting a project and configuring permissions.
+
+---
+
+## Browser UI
+
+The primary interface. Opens automatically at `http://localhost:4242`.
+
+### Dashboard
+Overview of your project: task queue sorted by priority, epics, done count for today.
+One click to start a sprint or select an epic.
+
+### Sprint Runner
+Live view while work is in progress:
+- Task queue with status (queued / running / done / cancelled)
+- Real-time Claude log stream — see exactly what Claude is doing
+- Progress bar and elapsed time per task
+- Stop button
+
+### Settings
+- GraphMemory connection (URL, project ID, API key)
+- Permissions — what Claude is allowed to do per session
+- Notifications — Telegram, webhook, desktop
+- Timeout and retry configuration
+
+---
+
+## Permissions
+
+Control what Claude Code can do in each session:
+
+```json
+{
+  "permissions": {
+    "writeFiles": true,
+    "runCommands": ["npm test", "npm run build", "git add", "git commit"],
+    "blockedCommands": ["git push", "npm publish"]
+  }
+}
+```
+
+Translates directly to `--allowedTools` flags passed to `claude --print`.
+Claude cannot run blocked commands even if it tries.
+
+---
+
+## Notifications
+
+Get notified when work is done — useful for long sprints.
+
+**Telegram:**
+```json
+{
+  "notifications": {
+    "telegram": {
+      "botToken": "...",
+      "chatId": "..."
+    },
+    "on": ["sprint_complete", "task_failed"]
+  }
+}
+```
+
+**Webhook** (generic POST — works with Slack, Discord, custom endpoints):
+```json
+{
+  "notifications": {
+    "webhook": {
+      "url": "https://your-endpoint.com/notify",
+      "headers": { "Authorization": "Bearer ..." }
+    }
+  }
+}
+```
+
+**Desktop** — native OS notification (macOS, Linux, Windows).
+
+---
+
+## Configuration
+
+Resolved in order — later sources override earlier:
+
+1. Defaults
+2. `.gm-orchestrator.json` in current directory
+3. Environment variables
+4. CLI flags
+
+### Config file
+
+```json
+{
+  "baseUrl": "http://localhost:3000",
+  "projectId": "my-app",
+  "apiKey": "",
+  "timeoutMs": 900000,
+  "pauseMs": 2000,
+  "maxRetries": 1,
+  "claudeArgs": [],
+  "permissions": {
+    "writeFiles": true,
+    "runCommands": ["npm test", "git commit"],
+    "blockedCommands": ["git push", "npm publish"]
+  },
+  "notifications": {
+    "telegram": {
+      "botToken": "",
+      "chatId": ""
+    }
+  }
+}
+```
+
+### Environment variables
+
+| Variable        | Maps to      |
+|-----------------|--------------|
+| `GM_BASE_URL`   | `baseUrl`    |
+| `GM_PROJECT_ID` | `projectId`  |
+| `GM_API_KEY`    | `apiKey`     |
+| `GM_TIMEOUT_MS` | `timeoutMs`  |
+| `GM_PORT`       | server port (default: 4242) |
+
+### All config options
+
+| Option       | Type       | Default           | Description                      |
+|--------------|------------|-------------------|----------------------------------|
+| `baseUrl`    | `string`   | `http://localhost:3000` | GraphMemory server URL     |
+| `projectId`  | `string`   | *(required)*      | GraphMemory project ID           |
+| `apiKey`     | `string`   |                   | API key (if GM auth is enabled)  |
+| `timeoutMs`  | `number`   | `900000` (15 min) | Per-task timeout in ms           |
+| `pauseMs`    | `number`   | `2000`            | Pause between tasks              |
+| `maxRetries` | `number`   | `1`               | Retries on timeout/error         |
+| `claudeArgs` | `string[]` | `[]`              | Extra args for `claude --print`  |
+| `dryRun`     | `boolean`  | `false`           | Preview prompts, don't run       |
+
+---
+
+## CLI (advanced)
+
+The browser UI is the primary interface. CLI commands are available for scripting and CI.
+
+```bash
+# Start UI (default)
+gm-orchestrator
+
+# Run sprint headless (no browser)
+gm-orchestrator sprint --project my-app
+
+# Run specific epic headless
+gm-orchestrator epic <epicId> --project my-app
+
+# Check task counts
+gm-orchestrator status --project my-app
+
+# Preview prompts without spawning Claude
+gm-orchestrator sprint --project my-app --dry-run
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--project`, `-p` | GraphMemory project ID | env / config |
+| `--tag`, `-t` | Filter tasks by tag | |
+| `--timeout <min>` | Per-task timeout in minutes | 15 |
+| `--retries <n>` | Retries on timeout/error | 1 |
+| `--dry-run` | Preview prompts, don't spawn Claude | |
+| `--config` | Print resolved config and exit | |
+
+---
+
+## Programmatic API
 
 ```ts
 import {
@@ -44,10 +246,7 @@ import {
 } from 'gm-orchestrator';
 
 const config = loadConfig({ projectId: 'my-app' });
-const gm = new GraphMemoryClient({
-  baseUrl: config.baseUrl,
-  projectId: config.projectId,
-});
+const gm = new GraphMemoryClient({ baseUrl: config.baseUrl, projectId: config.projectId });
 
 const ports = {
   gm,
@@ -56,110 +255,34 @@ const ports = {
   logger: consoleLogger,
 };
 
-// Run a sprint
 await runSprint(ports, config);
-
-// Or run a specific epic
-await runEpic('my-epic-id', ports, config);
+await runEpic('epic-id', ports, config);
 ```
 
-## CLI Reference
-
-```
-gm-orchestrator <command> [options]
-```
-
-### Commands
-
-| Command            | Description                                    |
-| ------------------ | ---------------------------------------------- |
-| `sprint`           | Run all todo/in_progress tasks by priority     |
-| `epic <epicId>`    | Run all tasks linked to an epic                |
-| `status`           | Show task counts (no Claude sessions spawned)  |
-
-### Options
-
-| Flag                  | Description                                      | Default     |
-| --------------------- | ------------------------------------------------ | ----------- |
-| `--project`, `-p`     | GraphMemory project ID                           | env / config|
-| `--tag`, `-t`         | Filter tasks by tag                              |             |
-| `--timeout <min>`     | Per-task timeout in minutes                      | 15          |
-| `--retries <n>`       | Retries on timeout/error                         | 1           |
-| `--dry-run`           | Preview prompts without spawning Claude           |             |
-| `--config`            | Print resolved config and exit                   |             |
-
-## Configuration
-
-Configuration is resolved in order (later sources override earlier):
-
-1. **Defaults**
-2. **Config file** (`.gm-orchestrator.json` in the current directory)
-3. **Environment variables**
-4. **CLI flags**
-
-### Config file
-
-Create `.gm-orchestrator.json` in your project root:
-
-```json
-{
-  "baseUrl": "http://localhost:3000",
-  "projectId": "my-app",
-  "apiKey": "mgm-key-...",
-  "timeoutMs": 900000,
-  "maxRetries": 1,
-  "claudeArgs": []
-}
-```
-
-### Environment variables
-
-| Variable          | Maps to       |
-| ----------------- | ------------- |
-| `GM_BASE_URL`     | `baseUrl`     |
-| `GM_PROJECT_ID`   | `projectId`   |
-| `GM_API_KEY`      | `apiKey`      |
-| `GM_TIMEOUT_MS`   | `timeoutMs`   |
-
-### All config options
-
-| Option       | Type       | Default                  | Description                        |
-| ------------ | ---------- | ------------------------ | ---------------------------------- |
-| `baseUrl`    | `string`   | `http://localhost:3000`  | GraphMemory server URL             |
-| `projectId`  | `string`   | *(required)*             | GraphMemory project ID             |
-| `apiKey`     | `string`   |                          | API key for authenticated servers  |
-| `timeoutMs`  | `number`   | `900000` (15 min)        | Per-task timeout in milliseconds   |
-| `pauseMs`    | `number`   | `2000`                   | Pause between task runs            |
-| `maxRetries` | `number`   | `1`                      | Retries on timeout/error           |
-| `claudeArgs` | `string[]` | `[]`                     | Extra args passed to Claude Code   |
-| `dryRun`     | `boolean`  | `false`                  | Preview prompts without running    |
-
-## Programmatic API
-
-### Core
-
-- **`runSprint(ports, config)`** — Execute all todo/in_progress tasks sorted by priority
-- **`runEpic(epicId, ports, config)`** — Execute all tasks linked to an epic
-- **`buildPrompt(task)`** — Generate the autonomous-execution prompt for a task
+### Core functions
+- **`runSprint(ports, config)`** — run all todo/in_progress tasks by priority
+- **`runEpic(epicId, ports, config)`** — run all tasks in an epic
+- **`buildPrompt(task)`** — generate autonomous-execution prompt for a task
 
 ### Utilities
-
-- **`sortByPriority(tasks)`** — Sort tasks by priority order
-- **`isTerminal(status)`** — Check if a task status is terminal (done/cancelled)
-- **`areBlockersResolved(task)`** — Check if all blockers are resolved
-- **`loadConfig(overrides?)`** — Load and merge configuration
-- **`validateConfig(config)`** — Validate config (throws on missing projectId)
+- **`sortByPriority(tasks)`** — sort by priority order
+- **`isTerminal(status)`** — check if status is done/cancelled
+- **`areBlockersResolved(task)`** — check all blockers are done
+- **`loadConfig(overrides?)`** — load and merge config
+- **`validateConfig(config)`** — validate (throws on missing projectId)
 
 ### Infrastructure
-
-- **`GraphMemoryClient`** — HTTP client for the GraphMemory API
-- **`ClaudeRunner`** — Spawns and manages Claude Code processes
-- **`TaskPoller`** — Polls task status until completion
-- **`consoleLogger` / `silentLogger`** — Logger implementations
+- **`GraphMemoryClient`** — GraphMemory REST client
+- **`ClaudeRunner`** — spawns claude --print sessions
+- **`TaskPoller`** — polls task status until completion
+- **`consoleLogger` / `silentLogger`** — logger implementations
 
 ### Types
+`Task`, `Epic`, `TaskStatus`, `TaskPriority`, `EpicStatus`, `TaskRef`,
+`OrchestratorConfig`, `TaskRunResult`, `SprintStats`,
+`GraphMemoryPort`, `ClaudeRunnerPort`, `TaskPollerPort`, `Logger`
 
-`Task`, `Epic`, `TaskStatus`, `TaskPriority`, `EpicStatus`, `TaskRef`, `OrchestratorConfig`, `TaskRunResult`, `SprintStats`, `GraphMemoryPort`, `ClaudeRunnerPort`, `TaskPollerPort`, `Logger`
+---
 
 ## License
 
