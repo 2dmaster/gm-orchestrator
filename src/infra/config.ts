@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { resolve, join } from 'path';
+import { homedir } from 'os';
 import type { OrchestratorConfig } from '../core/types.js';
 
 const CONFIG_FILE = '.gm-orchestrator.json';
@@ -14,10 +15,27 @@ const DEFAULTS: OrchestratorConfig = {
   dryRun: false,
 };
 
-export function loadConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
-  const fileConfig = readFileConfig();
+/**
+ * Returns the user-level config directory: ~/.config/gm-orchestrator/
+ */
+export function getUserConfigDir(): string {
+  const xdg = process.env['XDG_CONFIG_HOME'];
+  const base = xdg || join(homedir(), '.config');
+  return join(base, 'gm-orchestrator');
+}
+
+/**
+ * Returns the user-level config file path.
+ */
+export function getUserConfigPath(): string {
+  return join(getUserConfigDir(), 'config.json');
+}
+
+export function loadConfig(overrides: Partial<OrchestratorConfig> & { configPath?: string } = {}): OrchestratorConfig {
+  const { configPath, ...rest } = overrides;
+  const fileConfig = readFileConfig(configPath);
   const envConfig = readEnvConfig();
-  return { ...DEFAULTS, ...fileConfig, ...envConfig, ...overrides };
+  return { ...DEFAULTS, ...fileConfig, ...envConfig, ...rest };
 }
 
 export function validateConfig(config: OrchestratorConfig): asserts config is OrchestratorConfig & { projectId: string } {
@@ -40,20 +58,48 @@ export function validateConfig(config: OrchestratorConfig): asserts config is Or
   }
 }
 
-export function saveConfig(config: Partial<OrchestratorConfig>): void {
-  const path = resolve(process.cwd(), CONFIG_FILE);
+export function saveConfig(config: Partial<OrchestratorConfig>, configPath?: string): void {
+  const path = configPath ?? getUserConfigPath();
+  const dir = resolve(path, '..');
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
   writeFileSync(path, JSON.stringify(config, null, 2) + '\n', 'utf8');
 }
 
 // ── Readers ───────────────────────────────────────────────────────────────
 
-function readFileConfig(): Partial<OrchestratorConfig> {
-  const path = resolve(process.cwd(), CONFIG_FILE);
+/**
+ * Reads config from (in priority order):
+ * 1. Explicit --config path
+ * 2. .gm-orchestrator.json in cwd (only if it contains a projectId — prevents
+ *    accidental wizard skip from stale files in random directories)
+ * 3. ~/.config/gm-orchestrator/config.json (user-level config)
+ */
+function readFileConfig(explicitPath?: string): Partial<OrchestratorConfig> {
+  // 1. Explicit path — use as-is
+  if (explicitPath) {
+    return readJsonConfig(explicitPath);
+  }
+
+  // 2. CWD config — only use if it has a projectId (intentional project-level config)
+  const cwdPath = resolve(process.cwd(), CONFIG_FILE);
+  const cwdConfig = readJsonConfig(cwdPath);
+  if (cwdConfig.projectId) {
+    return cwdConfig;
+  }
+
+  // 3. User-level config
+  const userPath = getUserConfigPath();
+  return readJsonConfig(userPath);
+}
+
+function readJsonConfig(path: string): Partial<OrchestratorConfig> {
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as Partial<OrchestratorConfig>;
   } catch {
-    console.warn(`Warning: could not parse ${CONFIG_FILE}`);
+    console.warn(`Warning: could not parse ${path}`);
     return {};
   }
 }

@@ -1,12 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import { Play, Loader2 } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { toast } from "sonner";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useTasks } from "../hooks/useTasks";
 import { useOrchestrator } from "../hooks/useOrchestrator";
-import TaskCard from "../components/TaskCard";
+import Shell from "../components/Shell";
+import TaskRow from "../components/TaskRow";
+import EpicCard from "../components/EpicCard";
 import type { Epic } from "../types";
-
-// ─── Priority ordering ─────────────────────────────────────────────────
 
 const PRIORITY_ORDER: Record<string, number> = {
   critical: 0,
@@ -15,7 +20,7 @@ const PRIORITY_ORDER: Record<string, number> = {
   low: 3,
 };
 
-// ─── Epics hook ─────────────────────────────────────────────────────────
+const MAX_VISIBLE_TASKS = 5;
 
 function useEpics(projectId: string | null) {
   const [epics, setEpics] = useState<Epic[]>([]);
@@ -30,7 +35,7 @@ function useEpics(projectId: string | null) {
       const data = (await res.json()) as { epics: Epic[] };
       setEpics(data.epics);
     } catch {
-      // Epics fetch failed — non-critical
+      // non-critical
     } finally {
       setIsLoading(false);
     }
@@ -40,16 +45,19 @@ function useEpics(projectId: string | null) {
     fetchEpics();
   }, [fetchEpics]);
 
-  return { epics, isLoading, refetch: fetchEpics };
+  return { epics, isLoading };
 }
 
-// ─── Dashboard ──────────────────────────────────────────────────────────
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning.";
+  if (h < 18) return "Good afternoon.";
+  return "Good evening.";
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const ws = useWebSocket();
-
-  // Get project ID from server status
   const [projectId, setProjectId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -72,11 +80,9 @@ export default function Dashboard() {
   const { tasks, isLoading: tasksLoading } = useTasks(projectId, ws);
   const orchestrator = useOrchestrator(ws);
   const { epics, isLoading: epicsLoading } = useEpics(projectId);
-
   const [selectedEpicId, setSelectedEpicId] = useState("");
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [showAllTasks, setShowAllTasks] = useState(false);
 
-  // Sort tasks by priority
   const sortedTasks = useMemo(
     () =>
       [...tasks].sort(
@@ -86,201 +92,179 @@ export default function Dashboard() {
     [tasks]
   );
 
-  // Stats
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const todayStart = useMemo(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }, []);
 
-  const doneToday = useMemo(
-    () => tasks.filter((t) => t.status === "done" && t.completedAt && t.completedAt >= todayStart).length,
-    [tasks, todayStart]
-  );
+  const stats = useMemo(() => {
+    const todo = tasks.filter((t) => t.status === "todo").length;
+    const done = tasks.filter((t) => t.status === "done").length;
+    const doneToday = tasks.filter((t) => t.status === "done" && t.completedAt && t.completedAt >= todayStart).length;
+    const cancelledToday = tasks.filter((t) => t.status === "cancelled" && t.completedAt && t.completedAt >= todayStart).length;
+    return { total: tasks.length, todo, done, doneToday, cancelledToday };
+  }, [tasks, todayStart]);
 
-  const cancelledToday = useMemo(
-    () => tasks.filter((t) => t.status === "cancelled" && t.completedAt && t.completedAt >= todayStart).length,
-    [tasks, todayStart]
-  );
+  const todayTotal = stats.doneToday + stats.cancelledToday;
+  const todayPct = todayTotal > 0 ? Math.round((stats.doneToday / todayTotal) * 100) : 0;
 
-  const totalTasks = tasks.length;
-
-  // Actions
   const handleRunSprint = useCallback(async () => {
     if (!projectId) return;
-    setActionError(null);
     try {
       await orchestrator.startSprint(projectId);
       navigate("/sprint");
     } catch (err) {
-      setActionError((err as Error).message);
+      toast.error((err as Error).message);
     }
   }, [projectId, orchestrator, navigate]);
 
   const handleRunEpic = useCallback(async () => {
     if (!projectId || !selectedEpicId) return;
-    setActionError(null);
     try {
       await orchestrator.startEpic(projectId, selectedEpicId);
       navigate("/sprint");
     } catch (err) {
-      setActionError((err as Error).message);
+      toast.error((err as Error).message);
     }
   }, [projectId, selectedEpicId, orchestrator, navigate]);
 
   if (!projectId) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
       </div>
     );
   }
 
+  const visibleTasks = showAllTasks ? sortedTasks : sortedTasks.slice(0, MAX_VISIBLE_TASKS);
+  const hiddenCount = sortedTasks.length - MAX_VISIBLE_TASKS;
+
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-mono text-accent">gm-orchestrator</h1>
-          <span className="text-text/60 font-mono text-sm">{projectId}</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="font-mono text-sm text-text/60">
-            <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${orchestrator.isRunning ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
-            {totalTasks} tasks
-          </span>
-          <Link
-            to="/settings"
-            className="text-text/40 hover:text-text/80 font-mono text-sm transition-colors"
+    <Shell projectId={projectId} taskCount={stats.total}>
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Header row */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold">{getGreeting()}</h1>
+            <p className="text-sm text-muted-foreground">
+              {stats.todo} tasks waiting in {projectId}
+            </p>
+          </div>
+          <Button
+            onClick={handleRunSprint}
+            disabled={orchestrator.isRunning}
+            className="gap-2"
           >
-            Settings
-          </Link>
-        </div>
-      </header>
-
-      {/* Action bar */}
-      <div className="px-6 py-4 border-b border-gray-800 flex items-center gap-3 flex-wrap">
-        <button
-          onClick={handleRunSprint}
-          disabled={orchestrator.isRunning}
-          className="px-4 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {orchestrator.isRunning ? (
-            <>
-              <div className="w-3 h-3 border-2 border-bg border-t-transparent rounded-full animate-spin" />
-              Running...
-            </>
-          ) : (
-            <>&#9654; Run Sprint</>
-          )}
-        </button>
-
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedEpicId}
-            onChange={(e) => setSelectedEpicId(e.target.value)}
-            disabled={orchestrator.isRunning || epicsLoading}
-            className="px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
-          >
-            <option value="">Select Epic...</option>
-            {epics.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.title}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={handleRunEpic}
-            disabled={!selectedEpicId || orchestrator.isRunning}
-            className="px-4 py-2 bg-accent/20 border border-accent text-accent font-mono text-sm rounded hover:bg-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Run Epic
-          </button>
+            {orchestrator.isRunning ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Play className="w-4 h-4" />
+            )}
+            {orchestrator.isRunning ? "Running..." : "Run Sprint"}
+          </Button>
         </div>
 
-        {actionError && (
-          <span className="text-red-400 font-mono text-xs">{actionError}</span>
+        {/* Cards grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Tasks */}
+          <Card className="lg:col-span-2">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                Tasks
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {tasksLoading && tasks.length === 0 ? (
+                <div className="flex items-center gap-3 text-muted-foreground text-sm py-8">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading tasks...
+                </div>
+              ) : sortedTasks.length === 0 ? (
+                <p className="text-muted-foreground text-sm py-8">No tasks found.</p>
+              ) : (
+                <>
+                  {visibleTasks.map((task) => (
+                    <TaskRow key={task.id} task={task} />
+                  ))}
+                  {!showAllTasks && hiddenCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllTasks(true)}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors pt-1"
+                    >
+                      + {hiddenCount} more
+                    </button>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Epics */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                Epics
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {epicsLoading && epics.length === 0 ? (
+                <div className="flex items-center gap-3 text-muted-foreground text-sm py-4">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                </div>
+              ) : epics.length === 0 ? (
+                <p className="text-muted-foreground text-sm py-4">No epics found.</p>
+              ) : (
+                <>
+                  {epics.map((epic) => (
+                    <EpicCard key={epic.id} epic={epic} />
+                  ))}
+                  <div className="flex items-center gap-2 pt-2">
+                    <select
+                      value={selectedEpicId}
+                      onChange={(e) => setSelectedEpicId(e.target.value)}
+                      disabled={orchestrator.isRunning || epicsLoading}
+                      className="flex-1 h-8 px-2 rounded-md border border-input bg-background text-xs font-mono disabled:opacity-50"
+                    >
+                      <option value="">Select epic...</option>
+                      {epics.map((e) => (
+                        <option key={e.id} value={e.id}>{e.title}</option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={handleRunEpic}
+                      disabled={!selectedEpicId || orchestrator.isRunning}
+                      className="text-xs"
+                    >
+                      Run Epic
+                    </Button>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Today bar */}
+        {todayTotal > 0 && (
+          <Card>
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium">Today</span>
+                <span className="text-xs text-muted-foreground">
+                  <span className="text-[var(--color-done)]">{stats.doneToday} done</span>
+                  {stats.cancelledToday > 0 && (
+                    <> &middot; <span className="text-[var(--color-cancelled)]">{stats.cancelledToday} cancelled</span></>
+                  )}
+                </span>
+              </div>
+              <Progress value={todayPct} className="h-2" />
+            </CardContent>
+          </Card>
         )}
       </div>
-
-      {/* Main content */}
-      <div className="flex-1 px-6 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Tasks column */}
-          <div className="lg:col-span-2 space-y-3">
-            <h2 className="text-sm font-mono text-text/60 uppercase tracking-wider mb-2">
-              Tasks
-            </h2>
-
-            {tasksLoading && tasks.length === 0 ? (
-              <div className="flex items-center gap-3 text-text/40 font-mono text-sm py-8">
-                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                Loading tasks...
-              </div>
-            ) : sortedTasks.length === 0 ? (
-              <p className="text-text/40 font-mono text-sm py-8">No tasks found.</p>
-            ) : (
-              <div className="space-y-2">
-                {sortedTasks.map((task) => (
-                  <TaskCard key={task.id} task={task} />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Epics column */}
-          <div className="space-y-3">
-            <h2 className="text-sm font-mono text-text/60 uppercase tracking-wider mb-2">
-              Epics
-            </h2>
-
-            {epicsLoading && epics.length === 0 ? (
-              <div className="flex items-center gap-3 text-text/40 font-mono text-sm py-4">
-                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                Loading...
-              </div>
-            ) : epics.length === 0 ? (
-              <p className="text-text/40 font-mono text-sm py-4">No epics found.</p>
-            ) : (
-              <div className="space-y-2">
-                {epics.map((epic) => (
-                  <div
-                    key={epic.id}
-                    className="flex items-center justify-between px-3 py-2.5 bg-gray-900/50 border border-gray-800 rounded-md font-mono text-sm hover:border-gray-700 transition-colors"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={`w-2 h-2 rounded-full shrink-0 ${
-                          epic.status === "done"
-                            ? "bg-green-500"
-                            : epic.status === "in_progress"
-                              ? "bg-accent animate-pulse"
-                              : "bg-gray-600"
-                        }`}
-                      />
-                      <span className="truncate text-text">{epic.title}</span>
-                    </div>
-                    <span className="text-text/40 text-xs shrink-0 ml-2">
-                      {epic.tasks?.length ?? 0}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Footer stats */}
-      <footer className="border-t border-gray-800 px-6 py-3 flex items-center gap-6">
-        <span className="font-mono text-xs text-text/40">
-          Done today: <span className="text-green-400">{doneToday}</span>
-        </span>
-        <span className="font-mono text-xs text-text/40">
-          Cancelled: <span className="text-red-400">{cancelledToday}</span>
-        </span>
-        <span className="flex-1" />
-        <span className={`font-mono text-xs ${ws.isConnected ? "text-green-400" : "text-red-400"}`}>
-          {ws.isConnected ? "WS connected" : "WS disconnected"}
-        </span>
-      </footer>
-    </div>
+    </Shell>
   );
 }

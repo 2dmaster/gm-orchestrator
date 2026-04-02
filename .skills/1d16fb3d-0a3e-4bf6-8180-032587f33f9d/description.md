@@ -1,0 +1,1 @@
+Systematic procedure for diagnosing and fixing bugs in the TypeScript codebase. Starts from symptom, narrows down to root cause using Graph Memory context, then validates the fix.

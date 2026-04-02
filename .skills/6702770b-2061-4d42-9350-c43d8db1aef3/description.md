@@ -1,0 +1,1 @@
+Procedure for analyzing, evaluating, or designing system architecture. Maps module boundaries, reviews prior decisions, checks pattern consistency, and captures ADRs as knowledge notes.

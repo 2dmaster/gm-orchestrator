@@ -1,0 +1,24 @@
+{
+  "baseUrl": "http://localhost:3001",
+  "projectId": "gm-orchestrator-ts",
+  "timeoutMs": 900000,
+  "pauseMs": 2000,
+  "maxRetries": 1,
+  "claudeArgs": [],
+  "dryRun": false,
+  "permissions": {
+    "readFiles": true,
+    "writeFiles": true,
+    "runTests": true,
+    "gitCommit": true,
+    "gitPush": false,
+    "npmPublish": false,
+    "customCommands": ""
+  },
+  "notifications": {
+    "telegramBotToken": "",
+    "telegramChatId": "",
+    "webhookUrl": "",
+    "desktopNotifications": false
+  }
+}

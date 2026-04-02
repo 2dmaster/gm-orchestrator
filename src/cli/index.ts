@@ -17,7 +17,7 @@ import type { OrchestratorConfig } from '../core/types.js';
 interface ParsedArgs {
   command: string | null;
   epicId: string | null;
-  overrides: Partial<OrchestratorConfig>;
+  overrides: Partial<OrchestratorConfig> & { configPath?: string };
   printConfig: boolean;
   headless: boolean;
 }
@@ -42,6 +42,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       case '--config': result.printConfig = true; break;
       case '--headless': result.headless = true; break;
       case '--help': case '-h': printHelp(); process.exit(0); break;
+      case '--config-path': result.overrides.configPath = args[++i]!; break;
       case '--project': case '-p': result.overrides.projectId = args[++i]!; break;
       case '--tag': case '-t': result.overrides.tag = args[++i]!; break;
       case '--timeout': result.overrides.timeoutMs = Number(args[++i]!) * 60_000; break;
@@ -73,6 +74,7 @@ OPTIONS
   --dry-run            Preview prompts, don't spawn Claude
   --headless           Run in CLI-only mode (skip server, require command)
   --config             Print resolved config and exit
+  --config-path <path> Explicit path to config JSON file
 
 CONFIG FILE  (.gm-orchestrator.json)
   {
@@ -117,7 +119,7 @@ async function main(): Promise<void> {
 
     const gmClient = new GraphMemoryClient({
       baseUrl: config.baseUrl,
-      projectId: config.projectId || 'default',
+      projectId: config.projectId,
     });
 
     // Create a no-op WS bus for now — replaced after server starts

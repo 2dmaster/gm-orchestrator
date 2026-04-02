@@ -1,21 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
+import { Check, X, Circle, Loader2, Square, ArrowLeft } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { toast } from "sonner";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useOrchestrator } from "../hooks/useOrchestrator";
-import ProgressBar from "../components/ProgressBar";
+import Shell from "../components/Shell";
 import LogStream from "../components/LogStream";
 import type { Task, SprintStats, ServerEvent } from "../types";
-
-// ─── Status indicators ─────────────────────────────────────────────────
-
-const statusIcon: Record<string, { icon: string; cls: string }> = {
-  done:        { icon: "✓", cls: "text-green-400" },
-  in_progress: { icon: "▶", cls: "text-accent animate-pulse" },
-  todo:        { icon: "○", cls: "text-gray-500" },
-  cancelled:   { icon: "✗", cls: "text-red-400" },
-};
-
-// ─── Elapsed time formatting ────────────────────────────────────────────
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -26,19 +20,15 @@ function formatElapsed(ms: number): string {
   return `${h}h ${m % 60}m`;
 }
 
-// ─── Task row with live timer ───────────────────────────────────────────
-
 interface SprintTask {
   task: Task;
-  startedAt?: number; // epoch ms
+  startedAt?: number;
   finishedAt?: number;
 }
 
-function TaskRow({ item }: { item: SprintTask }) {
+function SprintTaskRow({ item }: { item: SprintTask }) {
   const { task, startedAt, finishedAt } = item;
-  const si = statusIcon[task.status] ?? statusIcon.todo;
   const isRunning = task.status === "in_progress";
-
   const [elapsed, setElapsed] = useState("");
 
   useEffect(() => {
@@ -53,37 +43,72 @@ function TaskRow({ item }: { item: SprintTask }) {
   }, [startedAt, finishedAt, isRunning]);
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 font-mono text-sm border-b border-gray-800/60 last:border-b-0">
-      <span className={`w-5 text-center ${si.cls}`}>{si.icon}</span>
-      <span className="flex-1 truncate text-text">{task.title}</span>
-      <span className="text-gray-500 text-xs w-20 text-right">
-        {task.status === "done" ? "done" : task.status === "in_progress" ? "running" : task.status === "cancelled" ? "cancelled" : "queued"}
+    <div className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+      task.status === "done" ? "opacity-60 task-done" : ""
+    } ${task.status === "cancelled" ? "opacity-50" : ""}`}>
+      {task.status === "done" && <Check className="w-4 h-4 text-[var(--color-done)] shrink-0" />}
+      {task.status === "in_progress" && (
+        <div className="w-4 h-4 rounded-full bg-primary shrink-0 animate-pulse-dot" />
+      )}
+      {task.status === "todo" && <Circle className="w-4 h-4 text-muted-foreground shrink-0" />}
+      {task.status === "cancelled" && <X className="w-4 h-4 text-[var(--color-cancelled)] shrink-0" />}
+
+      <span className={`flex-1 truncate ${task.status === "cancelled" ? "line-through text-muted-foreground" : ""}`}>
+        {task.title}
       </span>
-      <span className="text-gray-500 text-xs w-20 text-right">{elapsed}</span>
-      {isRunning && (
-        <span className="w-2 h-2 rounded-full bg-accent animate-pulse shrink-0" />
+
+      {elapsed && (
+        <span className="text-xs text-muted-foreground font-mono shrink-0">{elapsed}</span>
+      )}
+
+      {task.status === "done" && (
+        <span className="text-[10px] text-[var(--color-done)]">done</span>
       )}
     </div>
   );
 }
 
-// ─── Sprint page ────────────────────────────────────────────────────────
+function useElapsedTimer(active: boolean) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    startRef.current = Date.now();
+    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  return elapsed;
+}
 
 export default function Sprint() {
   const ws = useWebSocket();
   const orchestrator = useOrchestrator(ws);
 
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [sprintTasks, setSprintTasks] = useState<Map<string, SprintTask>>(new Map());
   const [logLines, setLogLines] = useState<string[]>([]);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
   const [currentTaskTitle, setCurrentTaskTitle] = useState<string>("");
   const [completionStats, setCompletionStats] = useState<SprintStats | null>(null);
   const [stopped, setStopped] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
   const [runActive, setRunActive] = useState(false);
 
-  // Track whether we've seen a run:started event (or server says isRunning)
   const initializedRef = useRef(false);
+  const elapsedMs = useElapsedTimer(runActive);
+
+  // Fetch projectId
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.config?.projectId) setProjectId(data.config.projectId);
+      } catch { /* ignore */ }
+    })();
+  }, []);
 
   useEffect(() => {
     if (orchestrator.isRunning && !initializedRef.current) {
@@ -98,7 +123,7 @@ export default function Sprint() {
     const evt = ws.lastEvent as ServerEvent;
 
     switch (evt.type) {
-      case "run:started": {
+      case "run:started":
         initializedRef.current = true;
         setRunActive(true);
         setCompletionStats(null);
@@ -108,7 +133,6 @@ export default function Sprint() {
         setCurrentTaskId(null);
         setCurrentTaskTitle("");
         break;
-      }
 
       case "task:started": {
         const t = evt.payload.task;
@@ -131,16 +155,10 @@ export default function Sprint() {
         setSprintTasks((prev) => {
           const next = new Map(prev);
           const existing = next.get(t.id);
-          next.set(t.id, {
-            task: { ...t },
-            startedAt: existing?.startedAt,
-            finishedAt: now,
-          });
+          next.set(t.id, { task: { ...t }, startedAt: existing?.startedAt, finishedAt: now });
           return next;
         });
-        if (currentTaskId === t.id) {
-          setCurrentTaskId(null);
-        }
+        if (currentTaskId === t.id) setCurrentTaskId(null);
         break;
       }
 
@@ -157,183 +175,178 @@ export default function Sprint() {
         break;
       }
 
-      case "log:line": {
+      case "log:line":
         setLogLines((prev) => [...prev, evt.payload.line]);
         break;
-      }
 
-      case "run:complete": {
+      case "run:complete":
         setCompletionStats(evt.payload);
         setRunActive(false);
         setCurrentTaskId(null);
+        toast.success("Sprint complete!");
         break;
-      }
 
-      case "run:stopped": {
+      case "run:stopped":
         setStopped(true);
         setRunActive(false);
         setCurrentTaskId(null);
         break;
-      }
 
-      case "error": {
+      case "error":
         setLogLines((prev) => [...prev, `[ERROR] ${evt.payload.message}`]);
+        toast.error(evt.payload.message);
         break;
-      }
     }
   }, [ws.lastEvent, currentTaskId]);
 
-  // Derived stats
   const taskList = useMemo(() => Array.from(sprintTasks.values()), [sprintTasks]);
   const doneCount = useMemo(() => taskList.filter((t) => t.task.status === "done").length, [taskList]);
   const totalCount = taskList.length;
+  const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
 
   const handleStop = useCallback(async () => {
-    setStopError(null);
     try {
       await orchestrator.stop();
     } catch (err) {
-      setStopError((err as Error).message);
+      toast.error((err as Error).message);
     }
   }, [orchestrator]);
 
-  // ─── No active run ────────────────────────────────────────────────────
+  const taskCount = taskList.length;
+
+  // No active run
   if (!runActive && !completionStats && !stopped) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <p className="font-mono text-text/60 text-lg">No active run</p>
-        <Link
-          to="/dashboard"
-          className="px-4 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-        >
-          Go to Dashboard
-        </Link>
-      </div>
-    );
-  }
-
-  // ─── Completion summary ───────────────────────────────────────────────
-  if (completionStats) {
-    const stats = completionStats;
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-6">
-        <h1 className="text-2xl font-mono text-accent">Run Complete</h1>
-        <div className="grid grid-cols-2 gap-4 font-mono text-sm">
-          <span className="text-text/60">Done:</span>
-          <span className="text-green-400">{stats.done}</span>
-          <span className="text-text/60">Cancelled:</span>
-          <span className="text-red-400">{stats.cancelled}</span>
-          <span className="text-text/60">Retried:</span>
-          <span className="text-yellow-400">{stats.retried}</span>
-          <span className="text-text/60">Errors:</span>
-          <span className="text-red-400">{stats.errors}</span>
-          <span className="text-text/60">Skipped:</span>
-          <span className="text-gray-400">{stats.skipped}</span>
-          <span className="text-text/60">Duration:</span>
-          <span className="text-text">{formatElapsed(stats.durationMs)}</span>
+      <Shell projectId={projectId} taskCount={0}>
+        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+          <p className="text-lg text-muted-foreground">No active run</p>
+          <Link to="/dashboard" className={buttonVariants()}>Go to Dashboard</Link>
         </div>
-
-        {taskList.length > 0 && (
-          <div className="w-full max-w-2xl border border-gray-800 rounded-md mt-4">
-            {taskList.map((item) => (
-              <TaskRow key={item.task.id} item={item} />
-            ))}
-          </div>
-        )}
-
-        <Link
-          to="/dashboard"
-          className="mt-4 px-4 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-        >
-          Back to Dashboard
-        </Link>
-      </div>
+      </Shell>
     );
   }
 
-  // ─── Stopped state ────────────────────────────────────────────────────
+  // Completion summary
+  if (completionStats) {
+    const s = completionStats;
+    return (
+      <Shell projectId={projectId} taskCount={taskCount}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 gap-6">
+          <Card className="w-full max-w-md">
+            <CardContent className="py-8 space-y-6">
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-12 h-12 rounded-full bg-[var(--color-done)]/20 flex items-center justify-center">
+                  <Check className="w-6 h-6 text-[var(--color-done)]" />
+                </div>
+                <h2 className="text-lg font-semibold">Sprint Complete</h2>
+                <p className="text-sm text-muted-foreground">{formatElapsed(s.durationMs)}</p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div>
+                  <p className="text-2xl font-semibold text-[var(--color-done)]">{s.done}</p>
+                  <p className="text-[10px] text-muted-foreground">Done</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold text-[var(--color-cancelled)]">{s.cancelled}</p>
+                  <p className="text-[10px] text-muted-foreground">Cancelled</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold text-muted-foreground">{s.skipped}</p>
+                  <p className="text-[10px] text-muted-foreground">Skipped</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {taskList.length > 0 && (
+            <Card className="w-full max-w-2xl">
+              <CardContent className="py-2 divide-y divide-border">
+                {taskList.map((item) => (
+                  <SprintTaskRow key={item.task.id} item={item} />
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          <Link to="/dashboard" className={buttonVariants({ className: "gap-2" })}>
+            <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+          </Link>
+        </div>
+      </Shell>
+    );
+  }
+
+  // Stopped
   if (stopped && !runActive) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <h1 className="text-xl font-mono text-yellow-400">Run Stopped</h1>
-
-        {taskList.length > 0 && (
-          <div className="w-full max-w-2xl border border-gray-800 rounded-md mt-2">
-            {taskList.map((item) => (
-              <TaskRow key={item.task.id} item={item} />
-            ))}
-          </div>
-        )}
-
-        <Link
-          to="/dashboard"
-          className="mt-4 px-4 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-        >
-          Back to Dashboard
-        </Link>
-      </div>
+      <Shell projectId={projectId} taskCount={taskCount}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
+          <h2 className="text-lg font-semibold text-yellow-400">Run Stopped</h2>
+          {taskList.length > 0 && (
+            <Card className="w-full max-w-2xl">
+              <CardContent className="py-2 divide-y divide-border">
+                {taskList.map((item) => (
+                  <SprintTaskRow key={item.task.id} item={item} />
+                ))}
+              </CardContent>
+            </Card>
+          )}
+          <Link to="/dashboard" className={buttonVariants()}>Back to Dashboard</Link>
+        </div>
+      </Shell>
     );
   }
 
-  // ─── Active run ───────────────────────────────────────────────────────
+  // Active run
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header with progress and stop */}
-      <header className="border-b border-gray-800 px-6 py-4">
-        <div className="flex items-center justify-between gap-4 mb-3">
-          <h1 className="text-lg font-mono text-accent">Sprint</h1>
+    <Shell projectId={projectId} taskCount={taskCount}>
+      <div className="flex flex-col h-full">
+        {/* Top bar: progress + stop */}
+        <div className="px-6 py-4 border-b border-border space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-lg font-semibold">Sprint</h1>
+              <p className="text-xs text-muted-foreground">
+                {runActive ? "Running" : "Idle"} &middot; {formatElapsed(elapsedMs)} elapsed
+              </p>
+            </div>
+            <Button variant="destructive" size="sm" onClick={handleStop} className="gap-1.5">
+              <Square className="w-3.5 h-3.5" /> Stop
+            </Button>
+          </div>
           <div className="flex items-center gap-3">
-            <span className="font-mono text-sm text-text/60">
-              {doneCount}/{totalCount} tasks
+            <Progress value={progressPct} className="flex-1 h-2" />
+            <span className="text-xs text-muted-foreground font-mono shrink-0">
+              {doneCount} / {totalCount}
             </span>
-            <button
-              onClick={handleStop}
-              className="px-4 py-1.5 bg-red-900/40 border border-red-700 text-red-400 font-mono text-sm rounded hover:bg-red-900/60 transition-colors"
-            >
-              Stop
-            </button>
           </div>
         </div>
-        <ProgressBar completed={doneCount} total={totalCount} />
-        {stopError && (
-          <p className="text-red-400 font-mono text-xs mt-2">{stopError}</p>
-        )}
-      </header>
 
-      {/* Task list */}
-      <div className="border-b border-gray-800 max-h-[40vh] overflow-y-auto">
-        {taskList.length === 0 ? (
-          <div className="px-6 py-4 font-mono text-sm text-text/40 flex items-center gap-2">
-            <div className="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            Waiting for tasks...
+        {/* Task list */}
+        <div className="border-b border-border max-h-[40vh] overflow-y-auto divide-y divide-border/50">
+          {taskList.length === 0 ? (
+            <div className="px-6 py-4 text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Waiting for tasks...
+            </div>
+          ) : (
+            taskList.map((item) => (
+              <SprintTaskRow key={item.task.id} item={item} />
+            ))
+          )}
+        </div>
+
+        {/* Log stream */}
+        <div className="flex-1 px-6 py-4 flex flex-col min-h-0">
+          <p className="text-xs text-muted-foreground mb-2 font-mono">
+            Claude{currentTaskTitle ? ` — ${currentTaskTitle}` : ""}
+          </p>
+          <div className="flex-1 min-h-0">
+            <LogStream lines={logLines} taskId={currentTaskId ?? ""} />
           </div>
-        ) : (
-          taskList.map((item) => (
-            <TaskRow key={item.task.id} item={item} />
-          ))
-        )}
-      </div>
-
-      {/* Log stream */}
-      <div className="flex-1 px-6 py-4 flex flex-col min-h-0">
-        <h2 className="font-mono text-sm text-text/60 mb-2">
-          Claude log{currentTaskTitle ? ` — ${currentTaskTitle}` : ""}
-        </h2>
-        <div className="flex-1 min-h-0">
-          <LogStream lines={logLines} taskId={currentTaskId ?? ""} />
         </div>
       </div>
-
-      {/* Footer */}
-      <footer className="border-t border-gray-800 px-6 py-3 flex items-center">
-        <Link to="/dashboard" className="font-mono text-xs text-text/40 hover:text-text/60 transition-colors">
-          ← Dashboard
-        </Link>
-        <span className="flex-1" />
-        <span className={`font-mono text-xs ${ws.isConnected ? "text-green-400" : "text-red-400"}`}>
-          {ws.isConnected ? "WS connected" : "WS disconnected"}
-        </span>
-      </footer>
-    </div>
+    </Shell>
   );
 }

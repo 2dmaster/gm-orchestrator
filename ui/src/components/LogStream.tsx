@@ -9,7 +9,7 @@ const MAX_VISIBLE = 500;
 
 export default function LogStream({ lines, taskId }: LogStreamProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const isUserScrolled = useRef(false);
 
   const visible = lines.length > MAX_VISIBLE
@@ -24,7 +24,7 @@ export default function LogStream({ lines, taskId }: LogStreamProps) {
   }, [lines.length]);
 
   function handleScroll() {
-    const el = containerRef.current;
+    const el = viewportRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     isUserScrolled.current = !atBottom;
@@ -32,21 +32,29 @@ export default function LogStream({ lines, taskId }: LogStreamProps) {
 
   return (
     <div
-      ref={containerRef}
+      ref={viewportRef}
       onScroll={handleScroll}
       data-task-id={taskId}
-      className="bg-[#0d1117] rounded-md border border-gray-800 p-3 overflow-y-auto max-h-[32rem] font-mono text-sm leading-relaxed"
+      className="h-full bg-black/40 rounded-lg border border-border p-3 overflow-y-auto font-mono text-sm leading-relaxed"
     >
       {skipped > 0 && (
-        <div className="text-gray-600 text-xs mb-1">
+        <div className="text-muted-foreground text-xs mb-1">
           ... {skipped} lines hidden ...
         </div>
       )}
-      {visible.map((line, i) => (
-        <div key={skipped + i} className="text-[#00ff88] whitespace-pre-wrap break-all">
-          {line}
-        </div>
-      ))}
+      {visible.map((line, i) => {
+        const isToolCall = line.startsWith(">");
+        return (
+          <div
+            key={skipped + i}
+            className={`whitespace-pre-wrap break-all log-line ${
+              isToolCall ? "text-primary" : "text-foreground/80"
+            }`}
+          >
+            {line}
+          </div>
+        );
+      })}
       <div ref={bottomRef} />
     </div>
   );

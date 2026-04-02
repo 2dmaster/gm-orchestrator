@@ -95,6 +95,16 @@ describe('API routes', () => {
       expect(body.isRunning).toBe(false);
       expect(body.config).toBeDefined();
       expect(body.config.apiKey).toBeUndefined();
+      expect(body.setupRequired).toBe(false);
+    });
+
+    it('returns setupRequired=true when projectId is empty', async () => {
+      await startApp({ config: makeConfig({ projectId: '' }) });
+      const res = await fetch(`${baseUrl}/api/status`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.setupRequired).toBe(true);
     });
   });
 
@@ -275,6 +285,54 @@ describe('API routes', () => {
       expect(body.pauseMs).toBe(5000);
       expect(body.apiKey).toBeUndefined();
       expect(testApp.savedConfigs).toHaveLength(1);
+    });
+  });
+
+  // ── Setup-required guard ────────────────────────────────────────────
+
+  describe('setup-required guard', () => {
+    it('returns 503 for task routes when projectId is empty', async () => {
+      await startApp({ config: makeConfig({ projectId: '' }) });
+      const res = await fetch(`${baseUrl}/api/projects/test/tasks`);
+      const body = await res.json();
+
+      expect(res.status).toBe(503);
+      expect(body.error).toContain('Setup required');
+    });
+
+    it('returns 503 for epic routes when projectId is empty', async () => {
+      await startApp({ config: makeConfig({ projectId: '' }) });
+      const res = await fetch(`${baseUrl}/api/projects/test/epics`);
+      const body = await res.json();
+
+      expect(res.status).toBe(503);
+      expect(body.error).toContain('Setup required');
+    });
+
+    it('returns 503 for sprint run when projectId is empty', async () => {
+      await startApp({ config: makeConfig({ projectId: '' }) });
+      const res = await fetch(`${baseUrl}/api/run/sprint`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: 'p1' }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(503);
+      expect(body.error).toContain('Setup required');
+    });
+
+    it('allows status and config routes when projectId is empty', async () => {
+      await startApp({ config: makeConfig({ projectId: '' }) });
+
+      const statusRes = await fetch(`${baseUrl}/api/status`);
+      expect(statusRes.status).toBe(200);
+
+      const configRes = await fetch(`${baseUrl}/api/config`);
+      expect(configRes.status).toBe(200);
+
+      const projectsRes = await fetch(`${baseUrl}/api/projects`);
+      expect(projectsRes.status).toBe(200);
     });
   });
 

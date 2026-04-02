@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import PermissionToggle from "../components/PermissionToggle";
+import { Hexagon, Loader2, Check, ArrowLeft, ArrowRight } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "sonner";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -37,28 +43,42 @@ type Step = "welcome" | "discover" | "select" | "permissions" | "notifications" 
 
 const STEPS: Step[] = ["welcome", "discover", "select", "permissions", "notifications", "done"];
 
+const STEP_LABELS: Record<Step, string> = {
+  welcome: "Welcome",
+  discover: "Connect",
+  select: "Project",
+  permissions: "Permissions",
+  notifications: "Notify",
+  done: "Done",
+};
+
 // ─── Step Indicator ─────────────────────────────────────────────────────
 
 function StepIndicator({ current }: { current: Step }) {
   const idx = STEPS.indexOf(current);
   return (
-    <div className="flex items-center gap-2 mb-8">
+    <div className="flex items-center justify-center gap-1 mb-8">
       {STEPS.map((step, i) => (
-        <div key={step} className="flex items-center gap-2">
-          <div
-            className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-mono border transition-colors ${
-              i < idx
-                ? "bg-accent/20 border-accent text-accent"
-                : i === idx
-                  ? "bg-accent border-accent text-bg font-bold"
-                  : "bg-gray-800 border-gray-700 text-gray-500"
-            }`}
-          >
-            {i < idx ? "\u2713" : i + 1}
+        <div key={step} className="flex items-center gap-1">
+          <div className="flex flex-col items-center gap-1">
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium border transition-all ${
+                i < idx
+                  ? "bg-primary/20 border-primary text-primary"
+                  : i === idx
+                    ? "bg-primary border-primary text-primary-foreground font-bold"
+                    : "bg-muted border-border text-muted-foreground"
+              }`}
+            >
+              {i < idx ? <Check className="w-3.5 h-3.5" /> : i + 1}
+            </div>
+            <span className={`text-[10px] ${i <= idx ? "text-foreground" : "text-muted-foreground"}`}>
+              {STEP_LABELS[step]}
+            </span>
           </div>
           {i < STEPS.length - 1 && (
             <div
-              className={`w-8 h-px ${i < idx ? "bg-accent" : "bg-gray-700"}`}
+              className={`w-6 h-px mb-4 ${i < idx ? "bg-primary" : "bg-border"}`}
             />
           )}
         </div>
@@ -71,20 +91,23 @@ function StepIndicator({ current }: { current: Step }) {
 
 function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Welcome</h2>
-      <p className="text-text/80 font-mono text-sm leading-relaxed">
-        gm-orchestrator runs Claude Code sessions autonomously to complete your
-        GraphMemory tasks. This wizard will help you connect to a GraphMemory
-        server, choose a project, and configure permissions.
-      </p>
-      <button
-        onClick={onNext}
-        className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-      >
-        Next
-      </button>
-    </div>
+    <Card className="max-w-md mx-auto">
+      <CardContent className="flex flex-col items-center text-center py-10 space-y-6">
+        <Hexagon className="w-14 h-14 text-primary" strokeWidth={1.5} />
+        <div className="space-y-2">
+          <h2 className="text-xl font-mono font-semibold">gm-orchestrator</h2>
+          <p className="text-sm text-muted-foreground">
+            Autonomous AI sprint runner for GraphMemory.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Set up takes 60 seconds.
+          </p>
+        </div>
+        <Button onClick={onNext} className="gap-2">
+          Get started <ArrowRight className="w-4 h-4" />
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -108,71 +131,71 @@ function DiscoverStep({
   onBack: () => void;
 }) {
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Discover Servers</h2>
+    <Card>
+      <CardHeader>
+        <CardTitle>Connect GraphMemory</CardTitle>
+        <CardDescription>
+          {loading ? "Scanning localhost..." : `Found ${servers.length} server${servers.length !== 1 ? "s" : ""}`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loading ? (
+          <div className="flex items-center gap-3 text-muted-foreground text-sm py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            Scanning for GraphMemory servers...
+          </div>
+        ) : servers.length > 0 ? (
+          <div className="space-y-2">
+            {servers.map((s) => (
+              <div
+                key={s.url}
+                className="flex items-center justify-between px-4 py-3 bg-muted/50 border border-border rounded-lg text-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-[var(--color-done)]" />
+                  <span className="font-mono text-sm">{s.url}</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {s.projects.length} project{s.projects.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
 
-      {loading ? (
-        <div className="flex items-center gap-3 text-text/60 font-mono text-sm">
-          <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-          Scanning for GraphMemory servers...
-        </div>
-      ) : servers.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-text/60 font-mono text-xs">
-            Found {servers.length} server{servers.length > 1 ? "s" : ""}:
-          </p>
-          {servers.map((s) => (
-            <div
-              key={s.url}
-              className="flex items-center justify-between px-4 py-3 bg-gray-800/50 border border-gray-700 rounded font-mono text-sm"
-            >
-              <span className="text-text">{s.url}</span>
-              <span className="text-accent text-xs">
-                {s.projects.length} project{s.projects.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-text/60 font-mono text-sm">
-            No GraphMemory servers found. Enter a URL manually:
-          </p>
+          <Label className="text-xs text-muted-foreground">Or enter URL manually:</Label>
           <div className="flex gap-2">
-            <input
-              type="text"
+            <Input
               value={manualUrl}
               onChange={(e) => onManualUrlChange(e.target.value)}
               placeholder="http://localhost:3000"
-              className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text placeholder:text-gray-600 focus:border-accent focus:outline-none"
+              className="font-mono text-sm"
             />
-            <button
+            <Button
+              variant="secondary"
               onClick={onManualAdd}
               disabled={!manualUrl.trim()}
-              className="px-4 py-2 bg-accent/20 border border-accent text-accent font-mono text-sm rounded hover:bg-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Add
-            </button>
+            </Button>
           </div>
         </div>
-      )}
 
-      <div className="flex gap-3">
-        <button
-          onClick={onBack}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          disabled={loading || servers.length === 0}
-          className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Next
-        </button>
-      </div>
-    </div>
+        <div className="flex justify-between pt-2">
+          <Button variant="ghost" onClick={onBack} className="gap-1">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
+          <Button
+            onClick={onNext}
+            disabled={loading || servers.length === 0}
+            className="gap-1"
+          >
+            Continue <ArrowRight className="w-4 h-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -199,71 +222,99 @@ function SelectStep({
   const projects = server?.projects ?? [];
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Select Project</h2>
-
-      {servers.length > 1 && (
-        <div className="space-y-2">
-          <label className="text-text/60 font-mono text-xs">Server</label>
-          <select
-            value={selectedServer}
-            onChange={(e) => {
-              onSelectServer(e.target.value);
-              onSelectProject("");
-            }}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text focus:border-accent focus:outline-none"
-          >
-            {servers.map((s) => (
-              <option key={s.url} value={s.url}>
-                {s.url}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <label className="text-text/60 font-mono text-xs">Project</label>
-        {projects.length > 0 ? (
-          <select
-            value={selectedProject}
-            onChange={(e) => onSelectProject(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text focus:border-accent focus:outline-none"
-          >
-            <option value="">-- select a project --</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.id} ({p.taskCount} tasks)
-              </option>
-            ))}
-          </select>
-        ) : (
-          <p className="text-text/40 font-mono text-sm">
-            No projects found on this server.
-          </p>
+    <Card>
+      <CardHeader>
+        <CardTitle>Select project</CardTitle>
+        <CardDescription>Choose a GraphMemory project to orchestrate.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {servers.length > 1 && (
+          <div className="space-y-2">
+            <Label className="text-xs">Server</Label>
+            <select
+              value={selectedServer}
+              onChange={(e) => {
+                onSelectServer(e.target.value);
+                onSelectProject("");
+              }}
+              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm font-mono"
+            >
+              {servers.map((s) => (
+                <option key={s.url} value={s.url}>
+                  {s.url}
+                </option>
+              ))}
+            </select>
+          </div>
         )}
-      </div>
 
-      <div className="flex gap-3">
-        <button
-          onClick={onBack}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          disabled={!selectedProject}
-          className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Next
-        </button>
-      </div>
-    </div>
+        <div className="space-y-2">
+          {projects.length > 0 ? (
+            projects.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => onSelectProject(p.id)}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-sm text-left transition-colors ${
+                  selectedProject === p.id
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-muted/30 hover:bg-muted/50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${selectedProject === p.id ? "bg-primary" : "bg-muted-foreground"}`} />
+                  <span className="font-mono">{p.id}</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {p.taskCount} tasks &middot; {p.epicCount} epics
+                </span>
+              </button>
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground py-4">
+              No projects found on this server.
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-between pt-2">
+          <Button variant="ghost" onClick={onBack} className="gap-1">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
+          <Button onClick={onNext} disabled={!selectedProject} className="gap-1">
+            Continue <ArrowRight className="w-4 h-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 // ─── Permissions Step ───────────────────────────────────────────────────
+
+interface PermissionItemProps {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}
+
+function PermissionItem({ label, description, checked, disabled, onChange }: PermissionItemProps) {
+  return (
+    <div className={`flex items-center justify-between py-2.5 ${disabled ? "opacity-60" : ""}`}>
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      <Switch
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onChange}
+      />
+    </div>
+  );
+}
 
 function PermissionsStep({
   permissions,
@@ -277,78 +328,43 @@ function PermissionsStep({
   onBack: () => void;
 }) {
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Permissions</h2>
-      <p className="text-text/60 font-mono text-xs">
-        Configure what Claude Code is allowed to do during autonomous runs.
-      </p>
+    <Card>
+      <CardHeader>
+        <CardTitle>What can Claude do?</CardTitle>
+        <CardDescription>Configure permissions for autonomous runs.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="divide-y divide-border">
+          <PermissionItem label="Read files" description="Always enabled" checked={true} disabled={true} onChange={() => {}} />
+          <PermissionItem label="Write files" description="Create and modify files" checked={permissions.writeFiles} onChange={(v) => onChange({ ...permissions, writeFiles: v })} />
+          <PermissionItem label="Run tests" description="npm test, pytest, etc." checked={permissions.runTests} onChange={(v) => onChange({ ...permissions, runTests: v })} />
+          <PermissionItem label="Git commit" description="Stage and commit changes" checked={permissions.gitCommit} onChange={(v) => onChange({ ...permissions, gitCommit: v })} />
+          <PermissionItem label="Git push" description="Push to remote repository" checked={permissions.gitPush} onChange={(v) => onChange({ ...permissions, gitPush: v })} />
+          <PermissionItem label="npm publish" description="Publish packages to registry" checked={permissions.npmPublish} onChange={(v) => onChange({ ...permissions, npmPublish: v })} />
+        </div>
 
-      <div className="space-y-1 border border-gray-700 rounded p-4">
-        <PermissionToggle
-          label="Read files"
-          description="Always enabled"
-          checked={true}
-          disabled={true}
-          onChange={() => {}}
-        />
-        <PermissionToggle
-          label="Write files"
-          checked={permissions.writeFiles}
-          onChange={(v) => onChange({ ...permissions, writeFiles: v })}
-        />
-        <PermissionToggle
-          label="Run tests"
-          description="npm test, pytest, etc."
-          checked={permissions.runTests}
-          onChange={(v) => onChange({ ...permissions, runTests: v })}
-        />
-        <PermissionToggle
-          label="Git commit"
-          checked={permissions.gitCommit}
-          onChange={(v) => onChange({ ...permissions, gitCommit: v })}
-        />
-        <PermissionToggle
-          label="Git push"
-          checked={permissions.gitPush}
-          onChange={(v) => onChange({ ...permissions, gitPush: v })}
-        />
-        <PermissionToggle
-          label="npm/pip publish"
-          checked={permissions.npmPublish}
-          onChange={(v) => onChange({ ...permissions, npmPublish: v })}
-        />
-      </div>
+        <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground">
+            Custom command whitelist (comma-separated)
+          </Label>
+          <Input
+            value={permissions.customCommands}
+            onChange={(e) => onChange({ ...permissions, customCommands: e.target.value })}
+            placeholder="e.g. make build, cargo test"
+            className="font-mono text-sm"
+          />
+        </div>
 
-      <div className="space-y-2">
-        <label className="text-text/60 font-mono text-xs">
-          Custom command whitelist (comma-separated)
-        </label>
-        <input
-          type="text"
-          value={permissions.customCommands}
-          onChange={(e) =>
-            onChange({ ...permissions, customCommands: e.target.value })
-          }
-          placeholder="e.g. make build, cargo test"
-          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text placeholder:text-gray-600 focus:border-accent focus:outline-none"
-        />
-      </div>
-
-      <div className="flex gap-3">
-        <button
-          onClick={onBack}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-        >
-          Next
-        </button>
-      </div>
-    </div>
+        <div className="flex justify-between pt-2">
+          <Button variant="ghost" onClick={onBack} className="gap-1">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
+          <Button onClick={onNext} className="gap-1">
+            Continue <ArrowRight className="w-4 h-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -366,130 +382,119 @@ function NotificationsStep({
   onBack: () => void;
 }) {
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Notifications</h2>
-      <p className="text-text/60 font-mono text-xs">
-        Optional — configure how you want to be notified about run progress.
-      </p>
-
-      <div className="space-y-4">
-        <div className="space-y-3 border border-gray-700 rounded p-4">
-          <p className="text-text/80 font-mono text-sm">Telegram</p>
-          <input
-            type="text"
+    <Card>
+      <CardHeader>
+        <CardTitle>Notifications</CardTitle>
+        <CardDescription>Optional — configure how to be notified about run progress.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-3 rounded-lg border border-border p-4">
+          <Label className="text-sm font-medium">Telegram</Label>
+          <Input
             value={notifications.telegramBotToken}
-            onChange={(e) =>
-              onChange({ ...notifications, telegramBotToken: e.target.value })
-            }
+            onChange={(e) => onChange({ ...notifications, telegramBotToken: e.target.value })}
             placeholder="Bot token"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text placeholder:text-gray-600 focus:border-accent focus:outline-none"
+            className="font-mono text-sm"
           />
-          <input
-            type="text"
+          <Input
             value={notifications.telegramChatId}
-            onChange={(e) =>
-              onChange({ ...notifications, telegramChatId: e.target.value })
-            }
+            onChange={(e) => onChange({ ...notifications, telegramChatId: e.target.value })}
             placeholder="Chat ID"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text placeholder:text-gray-600 focus:border-accent focus:outline-none"
+            className="font-mono text-sm"
           />
         </div>
 
-        <div className="space-y-3 border border-gray-700 rounded p-4">
-          <p className="text-text/80 font-mono text-sm">Webhook</p>
-          <input
-            type="text"
+        <div className="space-y-3 rounded-lg border border-border p-4">
+          <Label className="text-sm font-medium">Webhook</Label>
+          <Input
             value={notifications.webhookUrl}
-            onChange={(e) =>
-              onChange({ ...notifications, webhookUrl: e.target.value })
-            }
+            onChange={(e) => onChange({ ...notifications, webhookUrl: e.target.value })}
             placeholder="https://example.com/webhook"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded font-mono text-sm text-text placeholder:text-gray-600 focus:border-accent focus:outline-none"
+            className="font-mono text-sm"
           />
         </div>
 
-        <div className="border border-gray-700 rounded p-4">
-          <PermissionToggle
-            label="Desktop notifications"
-            checked={notifications.desktopNotifications}
-            onChange={(v) =>
-              onChange({ ...notifications, desktopNotifications: v })
-            }
-          />
+        <div className="rounded-lg border border-border p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Desktop notifications</p>
+              <p className="text-xs text-muted-foreground">Browser push notifications</p>
+            </div>
+            <Switch
+              checked={notifications.desktopNotifications}
+              onCheckedChange={(v) => onChange({ ...notifications, desktopNotifications: v })}
+            />
+          </div>
         </div>
-      </div>
 
-      <div className="flex gap-3">
-        <button
-          onClick={onBack}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={onNext}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors"
-        >
-          Skip
-        </button>
-        <button
-          onClick={onNext}
-          className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors"
-        >
-          Next
-        </button>
-      </div>
-    </div>
+        <div className="flex justify-between pt-2">
+          <Button variant="ghost" onClick={onBack} className="gap-1">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onNext}>Skip</Button>
+            <Button onClick={onNext} className="gap-1">
+              Continue <ArrowRight className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 // ─── Done Step ──────────────────────────────────────────────────────────
 
 function DoneStep({
+  selectedProject,
+  selectedServer,
+  taskCount,
   saving,
   error,
   onSave,
   onBack,
 }: {
+  selectedProject: string;
+  selectedServer: string;
+  taskCount: number;
   saving: boolean;
   error: string | null;
   onSave: () => void;
   onBack: () => void;
 }) {
   return (
-    <div className="space-y-6">
-      <h2 className="text-xl font-mono text-accent">Ready to Go</h2>
-      <p className="text-text/80 font-mono text-sm">
-        Your configuration is ready. Click below to save and start using
-        gm-orchestrator.
-      </p>
-
-      {error && (
-        <div className="px-4 py-3 bg-red-500/10 border border-red-500/30 rounded font-mono text-sm text-red-400">
-          {error}
+    <Card className="max-w-md mx-auto">
+      <CardContent className="flex flex-col items-center text-center py-10 space-y-6">
+        <div className="w-14 h-14 rounded-full bg-[var(--color-done)]/20 flex items-center justify-center">
+          <Check className="w-7 h-7 text-[var(--color-done)]" />
         </div>
-      )}
+        <div className="space-y-2">
+          <h2 className="text-xl font-semibold">You&apos;re ready</h2>
+          <p className="text-sm text-muted-foreground font-mono">
+            {selectedProject} &middot; {selectedServer}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {taskCount} tasks waiting
+          </p>
+        </div>
 
-      <div className="flex gap-3">
-        <button
-          onClick={onBack}
-          disabled={saving}
-          className="px-6 py-2 bg-gray-800 border border-gray-700 text-text font-mono text-sm rounded hover:border-gray-600 transition-colors disabled:opacity-50"
-        >
-          Back
-        </button>
-        <button
-          onClick={onSave}
-          disabled={saving}
-          className="px-6 py-2 bg-accent text-bg font-mono text-sm rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {saving && (
-            <div className="w-4 h-4 border-2 border-bg border-t-transparent rounded-full animate-spin" />
-          )}
-          Save & Start
-        </button>
-      </div>
-    </div>
+        {error && (
+          <div className="w-full px-4 py-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <Button variant="ghost" onClick={onBack} disabled={saving} className="gap-1">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
+          <Button onClick={onSave} disabled={saving} className="gap-2">
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            Go to Dashboard <ArrowRight className="w-4 h-4" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -539,9 +544,16 @@ export default function Wizard() {
         const res = await fetch("/api/status");
         if (res.ok) {
           const data = await res.json();
-          if (data.config?.projectId) {
-            navigate("/dashboard", { replace: true });
-            return;
+          if (data.config?.projectId && !data.setupRequired) {
+            try {
+              const projectRes = await fetch(`/api/projects/${data.config.projectId}/tasks?limit=1`);
+              if (projectRes.ok) {
+                navigate("/dashboard", { replace: true });
+                return;
+              }
+            } catch {
+              // GM server not reachable — stay on wizard
+            }
           }
         }
       } catch {
@@ -608,9 +620,12 @@ export default function Wizard() {
         const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
+      toast.success("Configuration saved!");
       navigate("/dashboard", { replace: true });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save config");
+      const msg = err instanceof Error ? err.message : "Failed to save config";
+      setSaveError(msg);
+      toast.error(msg);
     }
     setSaving(false);
   }, [servers, selectedServer, selectedProject, permissions, notifications, navigate]);
@@ -628,17 +643,19 @@ export default function Wizard() {
   if (checkingConfig) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
       </div>
     );
   }
 
+  // Calculate task count for done step
+  const selectedServerData = servers.find((s) => s.url === selectedServer);
+  const selectedProjectData = selectedServerData?.projects.find((p) => p.id === selectedProject);
+  const taskCount = selectedProjectData?.taskCount ?? 0;
+
   return (
     <div className="min-h-screen flex items-center justify-center p-8">
       <div className="w-full max-w-lg">
-        <h1 className="text-2xl font-mono text-accent mb-2">gm-orchestrator</h1>
-        <p className="text-text/40 font-mono text-xs mb-6">Setup Wizard</p>
-
         <StepIndicator current={step} />
 
         {step === "welcome" && <WelcomeStep onNext={goNext} />}
@@ -687,6 +704,9 @@ export default function Wizard() {
 
         {step === "done" && (
           <DoneStep
+            selectedProject={selectedProject}
+            selectedServer={selectedServer}
+            taskCount={taskCount}
             saving={saving}
             error={saveError}
             onSave={handleSave}

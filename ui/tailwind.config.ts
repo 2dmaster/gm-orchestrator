@@ -5,12 +5,8 @@ export default {
   darkMode: "class",
   theme: {
     extend: {
-      colors: {
-        bg: "#0d1117",
-        accent: "#00ff88",
-        text: "#e6edf3",
-      },
       fontFamily: {
+        sans: ["Inter", "sans-serif"],
         mono: [
           "JetBrains Mono",
           "Fira Code",

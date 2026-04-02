@@ -1,0 +1,1 @@
+Procedure for organizing project work — creating tasks, setting priorities, establishing dependencies, and building a connected work breakdown. Used during sprint planning, backlog grooming, or when breaking down a large initiative.

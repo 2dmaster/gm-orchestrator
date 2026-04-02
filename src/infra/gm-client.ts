@@ -13,15 +13,38 @@ interface ClientOptions {
 }
 
 export class GraphMemoryClient implements GraphMemoryPort {
-  private readonly base: string;
-  private readonly headers: Record<string, string>;
+  private baseUrl: string;
+  private projectId: string;
+  private headers: Record<string, string>;
 
   constructor({ baseUrl, projectId, apiKey }: ClientOptions) {
-    this.base = `${baseUrl}/api/projects/${projectId}`;
+    this.baseUrl = baseUrl;
+    this.projectId = projectId;
     this.headers = {
       'Content-Type': 'application/json',
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     };
+  }
+
+  /** Returns true if the client has a projectId configured. */
+  get isConfigured(): boolean {
+    return this.projectId !== '';
+  }
+
+  /** Reconfigure the client with a new baseUrl, projectId, and/or apiKey. */
+  reconfigure({ baseUrl, projectId, apiKey }: Partial<ClientOptions>): void {
+    if (baseUrl !== undefined) this.baseUrl = baseUrl;
+    if (projectId !== undefined) this.projectId = projectId;
+    if (apiKey !== undefined) {
+      this.headers = {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      };
+    }
+  }
+
+  private get base(): string {
+    return `${this.baseUrl}/api/projects/${this.projectId}`;
   }
 
   // ── Tasks ─────────────────────────────────────────────────────────────

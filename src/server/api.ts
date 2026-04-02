@@ -20,7 +20,7 @@ export interface ApiDeps {
   config: OrchestratorConfig;
   logger: Logger;
   gmDiscovery: { discoverServers(): Promise<GMServer[]> };
-  gmClient: GraphMemoryPort;
+  gmClient: GraphMemoryPort & { reconfigure?: (opts: Partial<{ baseUrl: string; projectId: string; apiKey: string }>) => void };
   runner: RunnerService;
   saveConfig: (config: Partial<OrchestratorConfig>) => void;
   version?: string;
@@ -38,6 +38,7 @@ export function createApiRouter(deps: ApiDeps): Router {
       version: deps.version ?? '2.0.0',
       config: redactedConfig,
       isRunning: deps.runner.isRunning,
+      setupRequired: !deps.config.projectId,
     });
   });
 
@@ -51,8 +52,18 @@ export function createApiRouter(deps: ApiDeps): Router {
     }
   });
 
+  // ── Setup-required guard ────────────────────────────────────────────
+  // Routes below this middleware require a configured projectId.
+  const requireSetup = (_req: Request, res: Response, next: NextFunction): void => {
+    if (!deps.config.projectId) {
+      res.status(503).json({ error: 'Setup required: projectId is not configured. Complete the setup wizard first.' });
+      return;
+    }
+    next();
+  };
+
   // GET /api/projects/:id/tasks
-  router.get('/api/projects/:id/tasks', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/api/projects/:id/tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const opts: { status?: string; tag?: string; limit?: number } = {};
       if (req.query['tag']) opts.tag = req.query['tag'] as string;
@@ -66,7 +77,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   // GET /api/projects/:id/epics
-  router.get('/api/projects/:id/epics', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/api/projects/:id/epics', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const opts: { status?: string; limit?: number } = {};
       if (req.query['status']) opts.status = req.query['status'] as string;
@@ -79,7 +90,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   // POST /api/run/sprint
-  router.post('/api/run/sprint', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/api/run/sprint', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { projectId, tag } = req.body as { projectId?: string; tag?: string };
       if (!projectId) {
@@ -101,7 +112,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   // POST /api/run/epic
-  router.post('/api/run/epic', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/api/run/epic', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { projectId, epicId } = req.body as { projectId?: string; epicId?: string };
       if (!projectId || !epicId) {
@@ -122,7 +133,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   // POST /api/run/stop
-  router.post('/api/run/stop', async (_req: Request, res: Response, next: NextFunction) => {
+  router.post('/api/run/stop', requireSetup, async (_req: Request, res: Response, next: NextFunction) => {
     try {
       if (!deps.runner.isRunning) {
         res.status(409).json({ error: 'No run is in progress' });
@@ -152,6 +163,16 @@ export function createApiRouter(deps: ApiDeps): Router {
       // Merge into current config
       Object.assign(deps.config, body);
       deps.saveConfig(deps.config);
+
+      // Reconfigure the GM client if connection params changed
+      if (deps.gmClient.reconfigure && (body.baseUrl || body.projectId || body.apiKey)) {
+        deps.gmClient.reconfigure({
+          ...(body.baseUrl !== undefined && { baseUrl: body.baseUrl }),
+          ...(body.projectId !== undefined && { projectId: body.projectId }),
+          ...(body.apiKey !== undefined && { apiKey: body.apiKey }),
+        });
+      }
+
       const { apiKey: _redacted, ...redactedConfig } = deps.config;
       res.json(redactedConfig);
     } catch (err) {

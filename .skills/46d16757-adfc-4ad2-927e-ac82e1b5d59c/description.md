@@ -1,0 +1,1 @@
+Step-by-step procedure for implementing features, fixing bugs, or making code changes in this TypeScript project. Ensures context is gathered from Graph Memory before touching code, and knowledge is captured after completion.
