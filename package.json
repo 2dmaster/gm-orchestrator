@@ -1,6 +1,6 @@
 {
   "name": "gm-orchestrator",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Tokenless Claude Code orchestrator for GraphMemory — AI-first, TypeScript",
   "type": "module",
   "main": "dist/index.js",
