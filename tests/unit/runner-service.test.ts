@@ -52,6 +52,7 @@ function makeDeps(overrides: Partial<RunnerServiceDeps> = {}): RunnerServiceDeps
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',
     }),
+    listEpicTasks: vi.fn().mockResolvedValue([task]),
     listEpics: vi.fn().mockResolvedValue([]),
     moveEpic: vi.fn().mockResolvedValue(undefined),
   };
@@ -216,9 +217,9 @@ describe('RunnerService', () => {
     });
 
     it('emits run:started with mode epic and epicId', async () => {
-      // Make getTask return done so epic finishes immediately
-      (deps.gm.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(
-        makeTask({ status: 'done' })
+      // Make listEpicTasks return done task so epic finishes immediately
+      (deps.gm.listEpicTasks as ReturnType<typeof vi.fn>).mockResolvedValue(
+        [makeTask({ status: 'done' })]
       );
 
       const svc = createRunnerService(deps);

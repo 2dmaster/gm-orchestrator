@@ -1,8 +1,8 @@
 // ─── Frontend types (mirrored from backend core/types.ts) ──────────────
 
-export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
-export type EpicStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type EpicStatus = 'open' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 
 export interface TaskRef {
   id: string;

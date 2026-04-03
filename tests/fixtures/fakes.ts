@@ -69,6 +69,13 @@ export class FakeGraphMemory implements GraphMemoryPort {
     return epic;
   }
 
+  async listEpicTasks(epicId: string): Promise<Task[]> {
+    const epic = this.epics.get(epicId);
+    if (!epic) throw new Error(`Epic not found: ${epicId}`);
+    const taskIds = new Set((epic.tasks ?? []).map((t) => t.id));
+    return [...this.tasks.values()].filter((t) => taskIds.has(t.id));
+  }
+
   async listEpics({
     status,
   }: { status?: EpicStatus; limit?: number } = {}): Promise<Epic[]> {

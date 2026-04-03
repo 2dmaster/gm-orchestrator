@@ -2,9 +2,9 @@
 // Mirrors the GraphMemory REST API response shapes.
 // All orchestrator logic is typed against these.
 
-export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
-export type EpicStatus = 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type EpicStatus = 'open' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 
 export interface TaskRef {
   id: string;
@@ -119,6 +119,7 @@ export interface GraphMemoryPort {
   moveTask(taskId: string, status: TaskStatus): Promise<void>;
   updateTask(taskId: string, fields: Partial<Task>): Promise<void>;
   getEpic(epicId: string): Promise<Epic>;
+  listEpicTasks(epicId: string): Promise<Task[]>;
   listEpics(opts?: { status?: EpicStatus; limit?: number }): Promise<Epic[]>;
   moveEpic(epicId: string, status: EpicStatus): Promise<void>;
 }

@@ -10,6 +10,10 @@ const config: Record<TaskStatus, { label: string; className: string }> = {
     label: "Running",
     className: "bg-[var(--color-running)]/15 text-[var(--color-running)] border-[var(--color-running)]/30 animate-pulse-dot",
   },
+  backlog: {
+    label: "Backlog",
+    className: "bg-muted/50 text-muted-foreground border-muted-foreground/30",
+  },
   todo: {
     label: "Queued",
     className: "bg-[var(--color-queued)]/15 text-[var(--color-queued)] border-[var(--color-queued)]/30",

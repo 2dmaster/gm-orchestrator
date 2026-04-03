@@ -79,6 +79,11 @@ export class GraphMemoryClient implements GraphMemoryPort {
     return this.get<Epic>(`/epics/${epicId}`);
   }
 
+  async listEpicTasks(epicId: string): Promise<Task[]> {
+    const data = await this.get<{ results: Task[] }>(`/epics/${epicId}/tasks`);
+    return data.results ?? [];
+  }
+
   async listEpics({
     status,
     limit = 50,

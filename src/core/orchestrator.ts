@@ -95,26 +95,22 @@ export async function runEpic(
   logger.section(`Epic: "${epic.title}" (${epicId})`);
   logger.info(`Priority: ${epic.priority}  Status: ${epic.status}`);
 
-  const epicTaskIds = new Set((epic.tasks ?? []).map((t) => t.id));
   const failedIds = new Set<string>();
   const retryCounts = new Map<string, number>();
 
   while (true) {
-    // Fetch fresh task data for all epic tasks
-    const allTasks = await Promise.all(
-      [...epicTaskIds].map((id) => gm.getTask(id).catch(() => null))
-    );
+    // Fetch fresh task list from the epic's dedicated endpoint
+    const allTasks = await gm.listEpicTasks(epicId);
 
     const queue = sortByPriority(
-      allTasks.filter((t): t is Task =>
-        t !== null &&
+      allTasks.filter((t) =>
         !['done', 'cancelled'].includes(t.status) &&
         !failedIds.has(t.id)
       )
     );
 
     if (!queue.length) {
-      const allDone = allTasks.every((t) => t?.status === 'done');
+      const allDone = allTasks.length > 0 && allTasks.every((t) => t.status === 'done');
       if (allDone) {
         logger.success('All epic tasks done — marking epic complete');
         await gm.moveEpic(epicId, 'done');
