@@ -31,11 +31,13 @@ export function createServer(deps: ServerDeps): { app: express.Express; start: (
   function mountStaticUI(): void {
     const __dirname = dirname(fileURLToPath(import.meta.url));
     const uiDir = resolve(__dirname, '..', 'ui');
-    if (existsSync(uiDir)) {
+    const indexPath = resolve(uiDir, 'index.html');
+    if (existsSync(uiDir) && existsSync(indexPath)) {
       app.use(express.static(uiDir));
-      // SPA fallback — serve index.html for unmatched routes
-      app.get('{*path}', (_req, res) => {
-        res.sendFile(resolve(uiDir, 'index.html'));
+      // SPA fallback — serve index.html for unmatched non-API routes
+      app.get('{*path}', (req, res, next) => {
+        if (req.path.startsWith('/api')) return next();
+        res.sendFile(indexPath);
       });
     } else {
       app.get('{*path}', (_req, res) => {
