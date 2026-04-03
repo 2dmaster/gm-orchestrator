@@ -78,7 +78,7 @@ export default function CommandPalette({
             </CommandItem>
             <CommandItem onSelect={() => runAction(() => navigate("/sprint"))}>
               <Play className="w-4 h-4" />
-              <span>View Sprint</span>
+              <span>View Run</span>
             </CommandItem>
             <CommandItem onSelect={() => runAction(() => navigate("/settings"))}>
               <Settings className="w-4 h-4" />
@@ -97,8 +97,8 @@ export default function CommandPalette({
             {!isRunning && projectId && (
               <CommandItem onSelect={() => runAction(onStartSprint)}>
                 <Play className="w-4 h-4 text-primary" />
-                <span>Run Sprint</span>
-                <CommandShortcut>sprint</CommandShortcut>
+                <span>Run All Tasks</span>
+                <CommandShortcut>run</CommandShortcut>
               </CommandItem>
             )}
             {isRunning && (

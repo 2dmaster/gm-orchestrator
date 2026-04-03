@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runSprint, runEpic } from '../../src/core/orchestrator.js';
-import { FakeGraphMemory, FakePoller, FakeRunner } from '../fixtures/fakes.js';
+import { runSprint, runEpic, collectCrossProjectEpicTasks } from '../../src/core/orchestrator.js';
+import { FakeGraphMemory, FakePoller, FakeRunner, FakeCrossProjectResolver } from '../fixtures/fakes.js';
 import { silentLogger } from '../../src/infra/logger.js';
 import { makeTask, makeEpic } from '../fixtures/factories.js';
-import type { OrchestratorConfig } from '../../src/core/types.js';
+import type { OrchestratorConfig, CrossProjectResolver } from '../../src/core/types.js';
 
 const BASE_CONFIG: OrchestratorConfig = {
   projects: [{ baseUrl: 'http://localhost:3000', projectId: 'test' }],
@@ -275,5 +275,187 @@ describe('runEpic', () => {
 
     expect(runner.calls).toHaveLength(0);
     expect(stats.done).toBe(0);
+  });
+});
+
+// ── Cross-Project Blockers ──────────────────────────────────────────────
+
+describe('cross-project blocker resolution', () => {
+  let gm: FakeGraphMemory;
+  let poller: FakePoller;
+  let runner: FakeRunner;
+
+  beforeEach(() => {
+    gm = new FakeGraphMemory();
+    poller = makePoller(gm);
+    runner = new FakeRunner();
+  });
+
+  it('runs task when cross-project blocker is done', async () => {
+    const remoteGm = new FakeGraphMemory();
+    remoteGm.addTask(makeTask({ id: 'remote-dep', status: 'done' }));
+
+    const crossResolver = new FakeCrossProjectResolver();
+    crossResolver.addProject('other-project', remoteGm);
+
+    const task = makeTask({
+      id: 'local-task',
+      blockedBy: [{ id: 'remote-dep', title: 'Remote Dep', status: 'in_progress', projectId: 'other-project' }],
+    });
+    gm.addTask(task);
+    poller.setResult('local-task', 'done');
+
+    const ports = { ...makePorts(gm, poller, runner), crossProjectResolver: crossResolver.resolver };
+    const stats = await runSprint(ports, BASE_CONFIG);
+
+    expect(stats.done).toBe(1);
+    expect(runner.calls.map((c) => c.taskId)).toContain('local-task');
+  });
+
+  it('blocks task when cross-project blocker is not done', async () => {
+    const remoteGm = new FakeGraphMemory();
+    remoteGm.addTask(makeTask({ id: 'remote-dep', status: 'in_progress' }));
+
+    const crossResolver = new FakeCrossProjectResolver();
+    crossResolver.addProject('other-project', remoteGm);
+
+    const task = makeTask({
+      id: 'local-task',
+      blockedBy: [{ id: 'remote-dep', title: 'Remote Dep', status: 'in_progress', projectId: 'other-project' }],
+    });
+    gm.addTask(task);
+
+    const ports = { ...makePorts(gm, poller, runner), crossProjectResolver: crossResolver.resolver };
+    const stats = await runSprint(ports, BASE_CONFIG);
+
+    expect(stats.done).toBe(0);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('blocks task when cross-project is unreachable (conservative)', async () => {
+    // No project added to the resolver — simulates unreachable project
+    const crossResolver = new FakeCrossProjectResolver();
+
+    const task = makeTask({
+      id: 'local-task',
+      blockedBy: [{ id: 'remote-dep', title: 'Remote Dep', status: 'done', projectId: 'unknown-project' }],
+    });
+    gm.addTask(task);
+
+    const ports = { ...makePorts(gm, poller, runner), crossProjectResolver: crossResolver.resolver };
+    const stats = await runSprint(ports, BASE_CONFIG);
+
+    expect(stats.done).toBe(0);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('runs unblocked task while cross-project blocked task waits', async () => {
+    const remoteGm = new FakeGraphMemory();
+    remoteGm.addTask(makeTask({ id: 'remote-dep', status: 'in_progress' }));
+
+    const crossResolver = new FakeCrossProjectResolver();
+    crossResolver.addProject('other-project', remoteGm);
+
+    const blocked = makeTask({
+      id: 'blocked-task',
+      priority: 'critical',
+      blockedBy: [{ id: 'remote-dep', title: 'Remote Dep', status: 'in_progress', projectId: 'other-project' }],
+    });
+    const free = makeTask({ id: 'free-task', priority: 'low' });
+    gm.addTask(blocked);
+    gm.addTask(free);
+    poller.setResult('free-task', 'done');
+
+    const ports = { ...makePorts(gm, poller, runner), crossProjectResolver: crossResolver.resolver };
+    const stats = await runSprint(ports, BASE_CONFIG);
+
+    expect(stats.done).toBe(1);
+    expect(runner.calls.map((c) => c.taskId)).toContain('free-task');
+    expect(runner.calls.map((c) => c.taskId)).not.toContain('blocked-task');
+  });
+
+  it('works without resolver — falls back to embedded status', async () => {
+    const task = makeTask({
+      id: 'local-task',
+      blockedBy: [{ id: 'remote-dep', title: 'Remote Dep', status: 'done', projectId: 'other-project' }],
+    });
+    gm.addTask(task);
+    poller.setResult('local-task', 'done');
+
+    // No crossProjectResolver — uses embedded status
+    const ports = makePorts(gm, poller, runner);
+    const stats = await runSprint(ports, BASE_CONFIG);
+
+    expect(stats.done).toBe(1);
+  });
+});
+
+// ── Cross-Project Epic Tasks ────────────────────────────────────────────
+
+describe('collectCrossProjectEpicTasks', () => {
+  it('collects tasks from multiple projects', async () => {
+    const homeGm = new FakeGraphMemory();
+    const remoteGm = new FakeGraphMemory();
+
+    const homeTask = makeTask({ id: 'home-t1', title: 'Home task' });
+    const remoteTask = makeTask({ id: 'remote-t1', title: 'Remote task' });
+
+    homeGm.addTask(homeTask);
+    remoteGm.addTask(remoteTask);
+
+    const epic = makeEpic({
+      id: 'cross-epic',
+      tasks: [
+        { id: 'home-t1', title: 'Home task', status: 'todo' },
+        { id: 'remote-t1', title: 'Remote task', status: 'todo', projectId: 'remote-project' },
+      ],
+    });
+    homeGm.addEpic(epic);
+
+    const resolveGm = (pid: string) => {
+      if (pid === 'remote-project') return remoteGm;
+      throw new Error(`Unknown project: ${pid}`);
+    };
+
+    const result = await collectCrossProjectEpicTasks(
+      'cross-epic',
+      { gm: homeGm, logger: silentLogger },
+      resolveGm,
+      'home-project',
+    );
+
+    expect(result.tasks).toHaveLength(2);
+    expect(result.tasks.find((t) => t.id === 'home-t1')?.sourceProjectId).toBe('home-project');
+    expect(result.tasks.find((t) => t.id === 'remote-t1')?.sourceProjectId).toBe('remote-project');
+  });
+
+  it('handles unreachable projects gracefully', async () => {
+    const homeGm = new FakeGraphMemory();
+    const homeTask = makeTask({ id: 'home-t1', title: 'Home task' });
+    homeGm.addTask(homeTask);
+
+    const epic = makeEpic({
+      id: 'cross-epic',
+      tasks: [
+        { id: 'home-t1', title: 'Home task', status: 'todo' },
+        { id: 'remote-t1', title: 'Remote task', status: 'todo', projectId: 'dead-project' },
+      ],
+    });
+    homeGm.addEpic(epic);
+
+    const resolveGm = (_pid: string) => {
+      throw new Error('Unreachable');
+    };
+
+    const result = await collectCrossProjectEpicTasks(
+      'cross-epic',
+      { gm: homeGm, logger: silentLogger },
+      resolveGm,
+      'home-project',
+    );
+
+    // Only the home task should be collected
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]?.id).toBe('home-t1');
   });
 });

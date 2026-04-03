@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task } from '../core/types.js';
+import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task, CrossProjectTask } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
-import type { RunSnapshot } from './runner-service.js';
+import { collectCrossProjectEpicTasks } from '../core/orchestrator.js';
+import type { RunSnapshot, MultiRunSnapshot } from './runner-service.js';
 import type { Logger } from '../infra/logger.js';
 import type { GMServer } from '../infra/gm-discovery.js';
 import { probeServer } from '../infra/gm-discovery.js';
+import type { GraphMemoryClientPool } from '../infra/gm-client-pool.js';
 
 // ─── RunnerService interface ────────────────────────────────────────────
 // Defined here to avoid circular dep — runner-service.ts will implement it.
@@ -13,18 +15,29 @@ import { probeServer } from '../infra/gm-discovery.js';
 export interface RunnerService {
   isRunning: boolean;
   getRunSnapshot(): RunSnapshot;
+  getMultiRunSnapshot(): MultiRunSnapshot;
   startSprint(projectId: string, tag?: string): Promise<void>;
   startEpic(projectId: string, epicId: string): Promise<void>;
+  startMultiSprint(projectIds: string[], tag?: string, priority?: string): Promise<string[]>;
+  cancelQueued(requestId: string): boolean;
   stop(): Promise<void>;
 }
 
 // ─── Dependencies ───────────────────────────────────────────────────────
+
+/** Pool-like interface for resolving per-project GM clients. */
+export interface GMClientPool {
+  getClient(projectId: string): GraphMemoryPort;
+  has(projectId: string): boolean;
+  rebuild(projects: import('../core/types.js').ProjectEntry[]): void;
+}
 
 export interface ApiDeps {
   config: OrchestratorConfig;
   logger: Logger;
   gmDiscovery: { discoverServers(config?: DiscoveryConfig): Promise<GMServer[]> };
   gmClient: GraphMemoryPort & { reconfigure?: (opts: Partial<{ baseUrl: string; projectId: string; apiKey: string }>) => void };
+  gmPool?: GMClientPool;
   runner: RunnerService;
   saveConfig: (config: Partial<OrchestratorConfig>) => void;
   version?: string;
@@ -34,6 +47,17 @@ export interface ApiDeps {
 
 export function createApiRouter(deps: ApiDeps): Router {
   const router = Router();
+
+  /**
+   * Resolve the GM client for a given projectId.
+   * Uses the pool if available, otherwise falls back to the single gmClient.
+   */
+  function resolveClient(projectId: string): GraphMemoryPort {
+    if (deps.gmPool && deps.gmPool.has(projectId)) {
+      return deps.gmPool.getClient(projectId);
+    }
+    return deps.gmClient;
+  }
 
   // GET /api/status
   router.get('/api/status', (_req: Request, res: Response) => {
@@ -86,6 +110,72 @@ export function createApiRouter(deps: ApiDeps): Router {
     }
   });
 
+  // GET /api/projects/overview — multi-project overview with task counts
+  router.get('/api/projects/overview', async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projects = deps.config.projects;
+      if (projects.length === 0) {
+        res.json({ projects: [] });
+        return;
+      }
+
+      // Fetch task counts + epic counts from each configured project in parallel
+      const overviews = await Promise.all(
+        projects.map(async (proj) => {
+          const base = `${proj.baseUrl}/api/projects/${proj.projectId}`;
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (proj.apiKey) headers['Authorization'] = `Bearer ${proj.apiKey}`;
+
+          try {
+            const [tasksRes, epicsRes] = await Promise.all([
+              fetch(`${base}/tasks?limit=500`, { headers }),
+              fetch(`${base}/epics?limit=500`, { headers }),
+            ]);
+
+            let taskCounts = { todo: 0, in_progress: 0, done: 0, total: 0 };
+            if (tasksRes.ok) {
+              const data = (await tasksRes.json()) as { results?: Task[] };
+              const tasks = data.results ?? [];
+              taskCounts = {
+                todo: tasks.filter((t: Task) => t.status === 'todo').length,
+                in_progress: tasks.filter((t: Task) => t.status === 'in_progress').length,
+                done: tasks.filter((t: Task) => t.status === 'done').length,
+                total: tasks.length,
+              };
+            }
+
+            let epicCount = 0;
+            if (epicsRes.ok) {
+              const data = (await epicsRes.json()) as { results?: unknown[] };
+              epicCount = (data.results ?? []).length;
+            }
+
+            return {
+              projectId: proj.projectId,
+              label: proj.label,
+              baseUrl: proj.baseUrl,
+              taskCounts,
+              epicCount,
+            };
+          } catch (err) {
+            return {
+              projectId: proj.projectId,
+              label: proj.label,
+              baseUrl: proj.baseUrl,
+              taskCounts: { todo: 0, in_progress: 0, done: 0, total: 0 },
+              epicCount: 0,
+              error: (err as Error).message,
+            };
+          }
+        })
+      );
+
+      res.json({ projects: overviews });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ── Setup-required guard ────────────────────────────────────────────
   // Routes below this middleware require a configured projectId.
   const requireSetup = (_req: Request, res: Response, next: NextFunction): void => {
@@ -100,11 +190,13 @@ export function createApiRouter(deps: ApiDeps): Router {
   // GET /api/projects/:id/tasks
   router.get('/api/projects/:id/tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
+      const client = resolveClient(projectId);
       const opts: { status?: string; tag?: string; limit?: number } = {};
       if (req.query['tag']) opts.tag = req.query['tag'] as string;
       if (req.query['status']) opts.status = req.query['status'] as string;
       if (req.query['limit']) opts.limit = Number(req.query['limit']);
-      const tasks = await deps.gmClient.listTasks(opts as any);
+      const tasks = await client.listTasks(opts as Parameters<GraphMemoryPort['listTasks']>[0]);
       res.json({ tasks });
     } catch (err) {
       next(err);
@@ -114,11 +206,62 @@ export function createApiRouter(deps: ApiDeps): Router {
   // GET /api/projects/:id/epics
   router.get('/api/projects/:id/epics', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
+      const client = resolveClient(projectId);
       const opts: { status?: string; limit?: number } = {};
       if (req.query['status']) opts.status = req.query['status'] as string;
       if (req.query['limit']) opts.limit = Number(req.query['limit']);
-      const epics = await deps.gmClient.listEpics(opts as any);
+      const epics = await client.listEpics(opts as Parameters<GraphMemoryPort['listEpics']>[0]);
       res.json({ epics });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /api/projects/:id/epics/:epicId/tasks
+  router.get('/api/projects/:id/epics/:epicId/tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
+      const client = resolveClient(projectId);
+      const epicId = Array.isArray(req.params['epicId']) ? req.params['epicId'][0]! : req.params['epicId']!;
+      const tasks = await client.listEpicTasks(epicId);
+      res.json({ tasks });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /api/projects/:id/epics/:epicId/cross-project-tasks
+  // Returns all tasks in an epic, including tasks from other projects, grouped by project
+  router.get('/api/projects/:id/epics/:epicId/cross-project-tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
+      const epicId = Array.isArray(req.params['epicId']) ? req.params['epicId'][0]! : req.params['epicId']!;
+      const client = resolveClient(projectId);
+
+      const resolveGm = (pid: string): GraphMemoryPort => resolveClient(pid);
+
+      const { epic, tasks } = await collectCrossProjectEpicTasks(
+        epicId,
+        { gm: client, logger: deps.logger },
+        resolveGm,
+        projectId,
+      );
+
+      // Group tasks by project for the UI
+      const byProject = new Map<string, CrossProjectTask[]>();
+      for (const t of tasks) {
+        const group = byProject.get(t.sourceProjectId) ?? [];
+        group.push(t);
+        byProject.set(t.sourceProjectId, group);
+      }
+
+      const grouped = [...byProject.entries()].map(([pid, projectTasks]) => ({
+        projectId: pid,
+        tasks: projectTasks,
+      }));
+
+      res.json({ epic, grouped, tasks });
     } catch (err) {
       next(err);
     }
@@ -144,6 +287,59 @@ export function createApiRouter(deps: ApiDeps): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  // POST /api/run/multi-sprint — run sprints on multiple projects with scheduler
+  router.post('/api/run/multi-sprint', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { projectIds, tag, priority } = req.body as {
+        projectIds?: string[];
+        tag?: string;
+        priority?: string;
+      };
+      if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
+        res.status(400).json({ error: 'projectIds[] is required and must be a non-empty array' });
+        return;
+      }
+      // Validate all project IDs are strings
+      if (!projectIds.every((id) => typeof id === 'string' && id.length > 0)) {
+        res.status(400).json({ error: 'All projectIds must be non-empty strings' });
+        return;
+      }
+
+      const requestIds = await deps.runner.startMultiSprint(projectIds, tag, priority);
+      res.json({ ok: true, mode: 'multi-sprint', projectIds, requestIds, tag });
+    } catch (err) {
+      if ((err as Error).message.includes('already in progress')) {
+        res.status(409).json({ error: (err as Error).message });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // DELETE /api/run/queue/:requestId — cancel a queued request
+  router.delete('/api/run/queue/:requestId', requireSetup, (req: Request, res: Response) => {
+    const requestId = Array.isArray(req.params['requestId'])
+      ? req.params['requestId'][0]!
+      : req.params['requestId']!;
+    const removed = deps.runner.cancelQueued(requestId);
+    if (removed) {
+      res.json({ ok: true, requestId });
+    } else {
+      res.status(404).json({ error: 'Request not found in queue (may already be running)' });
+    }
+  });
+
+  // GET /api/run/status — get scheduler status (multi-run snapshot)
+  router.get('/api/run/status', requireSetup, (_req: Request, res: Response) => {
+    const snapshot = deps.runner.getMultiRunSnapshot();
+    const singleSnapshot = deps.runner.isRunning ? deps.runner.getRunSnapshot() : null;
+    res.json({
+      isRunning: deps.runner.isRunning,
+      scheduler: snapshot,
+      ...(singleSnapshot ? { current: singleSnapshot } : {}),
+    });
   });
 
   // POST /api/run/epic
@@ -209,6 +405,11 @@ export function createApiRouter(deps: ApiDeps): Router {
             ...(active.apiKey !== undefined && { apiKey: active.apiKey }),
           });
         }
+      }
+
+      // Rebuild the pool if projects changed
+      if (deps.gmPool && body.projects) {
+        deps.gmPool.rebuild(deps.config.projects);
       }
 
       const redactedProjects = deps.config.projects.map(({ apiKey: _k, ...rest }) => rest);

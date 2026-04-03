@@ -10,6 +10,8 @@ export interface TaskRef {
   id: string;
   title: string;
   status: TaskStatus;
+  /** When present, indicates the task lives in a different project (cross-project blocker). */
+  projectId?: string;
 }
 
 export interface Task {
@@ -44,6 +46,26 @@ export interface Epic {
   updatedAt: string;
 }
 
+// ─── Cross-Project Types ────────────────────────────────────────────────
+
+/**
+ * Resolves the current status of a task in another project.
+ * Used by the orchestrator to check cross-project blockers.
+ * Returns undefined if the task/project is unreachable.
+ */
+export type CrossProjectResolver = (
+  projectId: string,
+  taskId: string,
+) => Promise<TaskStatus | undefined>;
+
+/**
+ * A task enriched with its source project ID, used in cross-project epic views
+ * where tasks from multiple projects are merged into a single list.
+ */
+export interface CrossProjectTask extends Task {
+  sourceProjectId: string;
+}
+
 // ─── Permissions ─────────────────────────────────────────────────────────
 
 export interface Permissions {
@@ -72,6 +94,8 @@ export interface ProjectEntry {
 
 // ─── Orchestrator Config ──────────────────────────────────────────────────
 
+export type SchedulerStrategy = 'round-robin' | 'priority';
+
 export interface OrchestratorConfig {
   // Multi-project support
   projects: ProjectEntry[];
@@ -79,6 +103,7 @@ export interface OrchestratorConfig {
 
   // Execution
   concurrency: number;     // max parallel claude sessions (default 1)
+  schedulerStrategy: SchedulerStrategy; // how to distribute work across projects (default 'round-robin')
   timeoutMs: number;       // per-task timeout
   pauseMs: number;         // delay between tasks
   maxRetries: number;
@@ -86,6 +111,10 @@ export interface OrchestratorConfig {
   // Claude Code
   claudeArgs: string[];
   dryRun: boolean;
+
+  // Agent SDK safety
+  maxTurns: number;           // max SDK turns per task (default 200)
+  agentTimeoutMs: number;     // inactivity watchdog — abort if no events for this long (default 120_000)
 
   // Sprint/Epic scope
   tag?: string;
@@ -146,16 +175,26 @@ export interface SprintStats {
 // ─── WebSocket Event Types ───────────────────────────────────────────────
 
 export type ServerEvent =
-  | { type: 'run:started';   payload: { mode: 'sprint' | 'epic'; epicId?: string } }
+  | { type: 'run:started';   payload: { mode: 'sprint' | 'epic'; epicId?: string; projectId?: string } }
   | { type: 'run:stopped' }
-  | { type: 'run:complete';  payload: SprintStats }
-  | { type: 'task:started';  payload: { task: Task } }
-  | { type: 'task:done';     payload: { task: Task } }
-  | { type: 'task:cancelled'; payload: { task: Task; reason?: string } }
-  | { type: 'task:timeout';  payload: { task: Task } }
-  | { type: 'task:retrying'; payload: { task: Task; attempt: number } }
-  | { type: 'log:line';      payload: { taskId: string; line: string } }
-  | { type: 'error';         payload: { message: string } };
+  | { type: 'run:complete';  payload: SprintStats & { projectId?: string } }
+  | { type: 'task:started';  payload: { task: Task; projectId?: string } }
+  | { type: 'task:done';     payload: { task: Task; projectId?: string } }
+  | { type: 'task:cancelled'; payload: { task: Task; reason?: string; projectId?: string } }
+  | { type: 'task:timeout';  payload: { task: Task; projectId?: string } }
+  | { type: 'task:retrying'; payload: { task: Task; attempt: number; projectId?: string } }
+  | { type: 'log:line';      payload: { taskId: string; line: string; projectId?: string } }
+  | { type: 'agent:tool_start'; payload: { taskId: string; tool: string; input: string; projectId?: string } }
+  | { type: 'agent:tool_end';   payload: { taskId: string; tool: string; output: string; projectId?: string } }
+  | { type: 'agent:thinking';   payload: { taskId: string; text: string; projectId?: string } }
+  | { type: 'agent:turn';       payload: { taskId: string; turn: number; projectId?: string } }
+  | { type: 'agent:cost';       payload: { taskId: string; costUsd: number; inputTokens: number; outputTokens: number; projectId?: string } }
+  | { type: 'agent:warning';    payload: { taskId: string; message: string; projectId?: string } }
+  | { type: 'scheduler:enqueued';  payload: { requestId: string; projectId: string; mode: 'sprint' | 'epic' } }
+  | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: 'sprint' | 'epic' } }
+  | { type: 'scheduler:slot_completed'; payload: { slotId: number; projectId: string; stats: SprintStats } }
+  | { type: 'scheduler:drained' }
+  | { type: 'error';         payload: { message: string; projectId?: string } };
 
 // ─── Ports (interfaces for dependency injection + testability) ────────────
 
@@ -172,6 +211,15 @@ export interface GraphMemoryPort {
   listEpicTasks(epicId: string): Promise<Task[]>;
   listEpics(opts?: { status?: EpicStatus; limit?: number }): Promise<Epic[]>;
   moveEpic(epicId: string, status: EpicStatus): Promise<void>;
+
+  /**
+   * Fetch the current status of a single task.
+   * Used for cross-project blocker resolution — the caller provides
+   * a task ID and receives its status without loading the full task.
+   * Optional: implementations that don't support cross-project resolution
+   * can leave this undefined.
+   */
+  getTaskStatus?(taskId: string): Promise<TaskStatus>;
 }
 
 /**

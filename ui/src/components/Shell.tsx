@@ -4,7 +4,7 @@ import { Separator } from "@/components/ui/separator";
 
 const NAV_ITEMS = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/sprint", label: "Sprint", icon: Play },
+  { path: "/sprint", label: "Run", icon: Play },
   { path: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
@@ -18,7 +18,7 @@ export default function Shell({ projectId, taskCount, children }: ShellProps) {
   const location = useLocation();
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="w-60 shrink-0 bg-card border-r border-border flex flex-col">
         {/* Logo */}

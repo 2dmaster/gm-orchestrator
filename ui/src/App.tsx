@@ -10,6 +10,7 @@ import Wizard from "./pages/Wizard";
 import Dashboard from "./pages/Dashboard";
 import Sprint from "./pages/Sprint";
 import Settings from "./pages/Settings";
+import EpicDetail from "./pages/EpicDetail";
 import type { Epic } from "./types";
 
 function AppInner() {
@@ -100,6 +101,7 @@ function AppInner() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/sprint" element={<Sprint />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/epics/:projectId/:epicId" element={<EpicDetail />} />
       </Routes>
       <Toaster richColors position="bottom-right" />
     </>

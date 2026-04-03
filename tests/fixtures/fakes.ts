@@ -4,6 +4,7 @@ import type {
   TaskStatus,
   Epic,
   EpicStatus,
+  CrossProjectResolver,
 } from '../../src/core/types.js';
 
 /**
@@ -88,6 +89,37 @@ export class FakeGraphMemory implements GraphMemoryPort {
     this.calls.moveEpic.push({ epicId, status });
     const epic = this.epics.get(epicId);
     if (epic) this.epics.set(epicId, { ...epic, status });
+  }
+
+  async getTaskStatus(taskId: string): Promise<TaskStatus> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    return task.status;
+  }
+}
+
+/**
+ * Fake cross-project resolver backed by a map of project → FakeGraphMemory.
+ * Useful for testing cross-project blocker resolution without real HTTP calls.
+ */
+export class FakeCrossProjectResolver {
+  private projects = new Map<string, FakeGraphMemory>();
+
+  addProject(projectId: string, gm: FakeGraphMemory): this {
+    this.projects.set(projectId, gm);
+    return this;
+  }
+
+  get resolver(): CrossProjectResolver {
+    return async (projectId: string, taskId: string) => {
+      const gm = this.projects.get(projectId);
+      if (!gm) return undefined;
+      try {
+        return await gm.getTaskStatus(taskId);
+      } catch {
+        return undefined;
+      }
+    };
   }
 }
 

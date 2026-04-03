@@ -8,11 +8,14 @@ const CONFIG_FILE = '.gm-orchestrator.json';
 const DEFAULTS: OrchestratorConfig = {
   projects: [],
   concurrency: 1,
+  schedulerStrategy: 'round-robin',
   timeoutMs: 15 * 60 * 1000,
   pauseMs: 2_000,
   maxRetries: 1,
   claudeArgs: [],
   dryRun: false,
+  maxTurns: 200,
+  agentTimeoutMs: 120_000,
 };
 
 /**
@@ -94,6 +97,7 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     }
     if (cfg.activeProjectId !== undefined) result.activeProjectId = cfg.activeProjectId;
     if (cfg.concurrency !== undefined) result.concurrency = cfg.concurrency;
+    if (cfg.schedulerStrategy !== undefined) result.schedulerStrategy = cfg.schedulerStrategy;
     if (cfg.timeoutMs !== undefined) result.timeoutMs = cfg.timeoutMs;
     if (cfg.pauseMs !== undefined) result.pauseMs = cfg.pauseMs;
     if (cfg.maxRetries !== undefined) result.maxRetries = cfg.maxRetries;
@@ -101,6 +105,8 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.dryRun !== undefined) result.dryRun = cfg.dryRun;
     if (cfg.tag !== undefined) result.tag = cfg.tag;
     if (cfg.discovery !== undefined) result.discovery = cfg.discovery;
+    if (cfg.maxTurns !== undefined) result.maxTurns = cfg.maxTurns;
+    if (cfg.agentTimeoutMs !== undefined) result.agentTimeoutMs = cfg.agentTimeoutMs;
   }
 
   return result;

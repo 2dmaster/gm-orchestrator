@@ -8,6 +8,8 @@ export interface TaskRef {
   id: string;
   title: string;
   status: TaskStatus;
+  /** Present when the task lives in a different project (cross-project blocker). */
+  projectId?: string;
 }
 
 export interface Task {
@@ -65,6 +67,8 @@ export interface OrchestratorConfig {
   maxRetries: number;
   claudeArgs: string[];
   dryRun: boolean;
+  maxTurns: number;
+  agentTimeoutMs: number;
   tag?: string;
 }
 
@@ -78,9 +82,25 @@ export type ServerEvent =
   | { type: 'task:timeout';   payload: { task: Task } }
   | { type: 'task:retrying';  payload: { task: Task; attempt: number } }
   | { type: 'log:line';       payload: { taskId: string; line: string } }
+  | { type: 'agent:tool_start'; payload: { taskId: string; tool: string; input: string } }
+  | { type: 'agent:tool_end';   payload: { taskId: string; tool: string; output: string } }
+  | { type: 'agent:thinking';   payload: { taskId: string; text: string } }
+  | { type: 'agent:turn';       payload: { taskId: string; turn: number } }
+  | { type: 'agent:cost';       payload: { taskId: string; costUsd: number; inputTokens: number; outputTokens: number } }
+  | { type: 'agent:warning';    payload: { taskId: string; message: string } }
   | { type: 'error';          payload: { message: string } };
 
 export type ServerEventType = ServerEvent['type'];
+
+/** Per-project overview returned by GET /api/projects/overview */
+export interface ProjectOverview {
+  projectId: string;
+  label?: string;
+  baseUrl: string;
+  taskCounts: { todo: number; in_progress: number; done: number; total: number };
+  epicCount: number;
+  error?: string; // set if the project's GM server was unreachable
+}
 
 export interface RunSnapshot {
   activeTask: Task | null;
@@ -94,4 +114,22 @@ export interface StatusResponse {
   isRunning: boolean;
   setupRequired: boolean;
   run?: RunSnapshot;
+}
+
+/** Task enriched with its source project ID, used in cross-project epic views. */
+export interface CrossProjectTask extends Task {
+  sourceProjectId: string;
+}
+
+/** Grouped tasks for a cross-project epic, keyed by project. */
+export interface CrossProjectEpicGroup {
+  projectId: string;
+  tasks: CrossProjectTask[];
+}
+
+/** Response from GET /api/projects/:id/epics/:epicId/cross-project-tasks */
+export interface CrossProjectEpicResponse {
+  epic: Epic;
+  grouped: CrossProjectEpicGroup[];
+  tasks: CrossProjectTask[];
 }

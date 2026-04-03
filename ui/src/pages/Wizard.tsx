@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Hexagon, Loader2, Check, ArrowLeft, ArrowRight } from "lucide-react";
+import { Hexagon, Loader2, Check, ArrowLeft, ArrowRight, Square, CheckSquare } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,12 @@ interface GMServer {
   url: string;
   port: number;
   projects: GMServerProject[];
+}
+
+/** A project selection combining the server URL with the project ID. */
+interface SelectedProject {
+  serverUrl: string;
+  projectId: string;
 }
 
 interface Permissions {
@@ -46,7 +52,7 @@ const STEPS: Step[] = ["welcome", "discover", "select", "permissions", "notifica
 const STEP_LABELS: Record<Step, string> = {
   welcome: "Welcome",
   discover: "Connect",
-  select: "Project",
+  select: "Projects",
   permissions: "Permissions",
   notifications: "Notify",
   done: "Done",
@@ -97,7 +103,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
         <div className="space-y-2">
           <h2 className="text-xl font-mono font-semibold">gm-orchestrator</h2>
           <p className="text-sm text-muted-foreground">
-            Autonomous AI sprint runner for GraphMemory.
+            Autonomous AI run orchestrator for GraphMemory.
           </p>
           <p className="text-xs text-muted-foreground">
             Set up takes 60 seconds.
@@ -201,89 +207,114 @@ function DiscoverStep({
   );
 }
 
-// ─── Select Project Step ────────────────────────────────────────────────
+// ─── Select Projects Step (multi-project checkboxes) ────────────────────
 
 function SelectStep({
   servers,
-  selectedServer,
-  selectedProject,
-  onSelectServer,
-  onSelectProject,
+  selectedProjects,
+  onToggleProject,
+  onSelectAll,
+  onDeselectAll,
   onNext,
   onBack,
 }: {
   servers: GMServer[];
-  selectedServer: string;
-  selectedProject: string;
-  onSelectServer: (url: string) => void;
-  onSelectProject: (id: string) => void;
+  selectedProjects: SelectedProject[];
+  onToggleProject: (serverUrl: string, projectId: string) => void;
+  onSelectAll: () => void;
+  onDeselectAll: () => void;
   onNext: () => void;
   onBack: () => void;
 }) {
-  const server = servers.find((s) => s.url === selectedServer);
-  const projects = server?.projects ?? [];
+  const isSelected = (serverUrl: string, projectId: string) =>
+    selectedProjects.some((sp) => sp.serverUrl === serverUrl && sp.projectId === projectId);
+
+  const totalProjects = servers.reduce((sum, s) => sum + s.projects.length, 0);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Select project</CardTitle>
-        <CardDescription>Choose a GraphMemory project to orchestrate.</CardDescription>
+        <CardTitle>Select projects</CardTitle>
+        <CardDescription>
+          Choose one or more GraphMemory projects to orchestrate.
+          {selectedProjects.length > 0 && (
+            <span className="ml-1 text-primary font-medium">
+              {selectedProjects.length} selected
+            </span>
+          )}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {servers.length > 1 && (
-          <div className="space-y-2">
-            <Label className="text-xs">Server</Label>
-            <select
-              value={selectedServer}
-              onChange={(e) => {
-                onSelectServer(e.target.value);
-                onSelectProject("");
-              }}
-              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm font-mono"
+        {totalProjects > 1 && (
+          <div className="flex gap-2 text-xs">
+            <button
+              type="button"
+              onClick={onSelectAll}
+              className="text-primary hover:underline"
             >
-              {servers.map((s) => (
-                <option key={s.url} value={s.url}>
-                  {s.url}
-                </option>
-              ))}
-            </select>
+              Select all
+            </button>
+            <span className="text-muted-foreground">/</span>
+            <button
+              type="button"
+              onClick={onDeselectAll}
+              className="text-muted-foreground hover:underline"
+            >
+              Deselect all
+            </button>
           </div>
         )}
 
-        <div className="space-y-2">
-          {projects.length > 0 ? (
-            projects.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => onSelectProject(p.id)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-sm text-left transition-colors ${
-                  selectedProject === p.id
-                    ? "border-primary bg-primary/10"
-                    : "border-border bg-muted/30 hover:bg-muted/50"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${selectedProject === p.id ? "bg-primary" : "bg-muted-foreground"}`} />
-                  <span className="font-mono">{p.id}</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {p.taskCount} tasks &middot; {p.epicCount} epics
-                </span>
-              </button>
-            ))
-          ) : (
-            <p className="text-sm text-muted-foreground py-4">
-              No projects found on this server.
-            </p>
-          )}
-        </div>
+        {servers.map((server) => (
+          <div key={server.url} className="space-y-2">
+            {servers.length > 1 && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <div className="w-2 h-2 rounded-full bg-[var(--color-done)]" />
+                <span className="font-mono">{server.url}</span>
+              </div>
+            )}
+
+            {server.projects.length > 0 ? (
+              server.projects.map((p) => {
+                const checked = isSelected(server.url, p.id);
+                return (
+                  <button
+                    key={`${server.url}::${p.id}`}
+                    type="button"
+                    onClick={() => onToggleProject(server.url, p.id)}
+                    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-sm text-left transition-colors ${
+                      checked
+                        ? "border-primary bg-primary/10"
+                        : "border-border bg-muted/30 hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {checked ? (
+                        <CheckSquare className="w-4 h-4 text-primary" />
+                      ) : (
+                        <Square className="w-4 h-4 text-muted-foreground" />
+                      )}
+                      <span className="font-mono">{p.id}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {p.taskCount} tasks &middot; {p.epicCount} epics
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="text-sm text-muted-foreground py-2">
+                No projects found on this server.
+              </p>
+            )}
+          </div>
+        ))}
 
         <div className="flex justify-between pt-2">
           <Button variant="ghost" onClick={onBack} className="gap-1">
             <ArrowLeft className="w-4 h-4" /> Back
           </Button>
-          <Button onClick={onNext} disabled={!selectedProject} className="gap-1">
+          <Button onClick={onNext} disabled={selectedProjects.length === 0} className="gap-1">
             Continue <ArrowRight className="w-4 h-4" />
           </Button>
         </div>
@@ -448,17 +479,17 @@ function NotificationsStep({
 // ─── Done Step ──────────────────────────────────────────────────────────
 
 function DoneStep({
-  selectedProject,
-  selectedServer,
-  taskCount,
+  selectedProjects,
+  servers,
+  totalTaskCount,
   saving,
   error,
   onSave,
   onBack,
 }: {
-  selectedProject: string;
-  selectedServer: string;
-  taskCount: number;
+  selectedProjects: SelectedProject[];
+  servers: GMServer[];
+  totalTaskCount: number;
   saving: boolean;
   error: string | null;
   onSave: () => void;
@@ -472,11 +503,23 @@ function DoneStep({
         </div>
         <div className="space-y-2">
           <h2 className="text-xl font-semibold">You&apos;re ready</h2>
-          <p className="text-sm text-muted-foreground font-mono">
-            {selectedProject} &middot; {selectedServer}
-          </p>
           <p className="text-sm text-muted-foreground">
-            {taskCount} tasks waiting
+            {selectedProjects.length} project{selectedProjects.length !== 1 ? "s" : ""} selected
+          </p>
+          <div className="space-y-1">
+            {selectedProjects.map((sp) => {
+              const server = servers.find((s) => s.url === sp.serverUrl);
+              const project = server?.projects.find((p) => p.id === sp.projectId);
+              return (
+                <p key={`${sp.serverUrl}::${sp.projectId}`} className="text-xs text-muted-foreground font-mono">
+                  {sp.projectId} &middot; {sp.serverUrl}
+                  {project ? ` (${project.taskCount} tasks)` : ""}
+                </p>
+              );
+            })}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {totalTaskCount} tasks waiting
           </p>
         </div>
 
@@ -512,9 +555,8 @@ export default function Wizard() {
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
 
-  // Selection state
-  const [selectedServer, setSelectedServer] = useState("");
-  const [selectedProject, setSelectedProject] = useState("");
+  // Selection state (multi-project)
+  const [selectedProjects, setSelectedProjects] = useState<SelectedProject[]>([]);
 
   // Permissions state
   const [permissions, setPermissions] = useState<Permissions>({
@@ -587,7 +629,7 @@ export default function Wizard() {
             }
             return merged;
           });
-          setSelectedServer((prev) => prev || (found.length > 0 ? found[0].url : ""));
+          // Servers are available for multi-project selection in the next step
         }
       } catch {
         // Discovery failed — user can enter manually
@@ -625,7 +667,6 @@ export default function Wizard() {
           }
           return [...prev, data.server];
         });
-        setSelectedServer(data.server.url);
         setManualUrl("");
         toast.success(`Found ${data.server.projects.length} project(s)`);
       } else {
@@ -638,15 +679,42 @@ export default function Wizard() {
     setManualProbing(false);
   }, [manualUrl]);
 
+  const handleToggleProject = useCallback((serverUrl: string, projectId: string) => {
+    setSelectedProjects((prev) => {
+      const exists = prev.some((sp) => sp.serverUrl === serverUrl && sp.projectId === projectId);
+      if (exists) {
+        return prev.filter((sp) => !(sp.serverUrl === serverUrl && sp.projectId === projectId));
+      }
+      return [...prev, { serverUrl, projectId }];
+    });
+  }, []);
+
+  const handleSelectAll = useCallback(() => {
+    const all: SelectedProject[] = [];
+    for (const server of servers) {
+      for (const project of server.projects) {
+        all.push({ serverUrl: server.url, projectId: project.id });
+      }
+    }
+    setSelectedProjects(all);
+  }, [servers]);
+
+  const handleDeselectAll = useCallback(() => {
+    setSelectedProjects([]);
+  }, []);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
     try {
-      const server = servers.find((s) => s.url === selectedServer);
-      const baseUrl = server?.url ?? selectedServer;
+      const projects = selectedProjects.map((sp) => ({
+        baseUrl: sp.serverUrl,
+        projectId: sp.projectId,
+      }));
+      const activeProjectId = selectedProjects.length > 0 ? selectedProjects[0].projectId : undefined;
       const config = {
-        projects: [{ baseUrl, projectId: selectedProject }],
-        activeProjectId: selectedProject,
+        projects,
+        activeProjectId,
         permissions,
         notifications,
       };
@@ -667,7 +735,7 @@ export default function Wizard() {
       toast.error(msg);
     }
     setSaving(false);
-  }, [servers, selectedServer, selectedProject, permissions, notifications, navigate]);
+  }, [selectedProjects, permissions, notifications, navigate]);
 
   const goNext = useCallback(() => {
     const idx = STEPS.indexOf(step);
@@ -687,10 +755,12 @@ export default function Wizard() {
     );
   }
 
-  // Calculate task count for done step
-  const selectedServerData = servers.find((s) => s.url === selectedServer);
-  const selectedProjectData = selectedServerData?.projects.find((p) => p.id === selectedProject);
-  const taskCount = selectedProjectData?.taskCount ?? 0;
+  // Calculate total task count for done step
+  const totalTaskCount = selectedProjects.reduce((sum, sp) => {
+    const server = servers.find((s) => s.url === sp.serverUrl);
+    const project = server?.projects.find((p) => p.id === sp.projectId);
+    return sum + (project?.taskCount ?? 0);
+  }, 0);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-8">
@@ -715,10 +785,10 @@ export default function Wizard() {
         {step === "select" && (
           <SelectStep
             servers={servers}
-            selectedServer={selectedServer}
-            selectedProject={selectedProject}
-            onSelectServer={setSelectedServer}
-            onSelectProject={setSelectedProject}
+            selectedProjects={selectedProjects}
+            onToggleProject={handleToggleProject}
+            onSelectAll={handleSelectAll}
+            onDeselectAll={handleDeselectAll}
             onNext={goNext}
             onBack={goBack}
           />
@@ -744,9 +814,9 @@ export default function Wizard() {
 
         {step === "done" && (
           <DoneStep
-            selectedProject={selectedProject}
-            selectedServer={selectedServer}
-            taskCount={taskCount}
+            selectedProjects={selectedProjects}
+            servers={servers}
+            totalTaskCount={totalTaskCount}
             saving={saving}
             error={saveError}
             onSave={handleSave}

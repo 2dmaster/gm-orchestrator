@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { GraphMemoryClient } from '../infra/gm-client.js';
+import { GraphMemoryClientPool } from '../infra/gm-client-pool.js';
 import { ClaudeRunner } from '../infra/claude-runner.js';
 import { TaskPoller } from '../infra/task-poller.js';
 import { consoleLogger } from '../infra/logger.js';
@@ -134,6 +135,9 @@ async function main(): Promise<void> {
     // Server mode doesn't require projectId upfront — it's set via the UI
     const { app, start, mountStaticUI } = createServer({ logger: consoleLogger });
 
+    // Init pool from all configured projects
+    const gmPool = new GraphMemoryClientPool(config.projects);
+
     const active = getActiveProject(config);
     const gmClient = new GraphMemoryClient({
       baseUrl: active?.baseUrl ?? 'http://localhost:3000',
@@ -160,6 +164,7 @@ async function main(): Promise<void> {
       logger: consoleLogger,
       gmDiscovery: { discoverServers },
       gmClient,
+      gmPool,
       runner,
       saveConfig: (partial) => saveConfig(partial),
     });

@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import type { Task } from "../types";
 import PriorityBadge from "./PriorityBadge";
 import StatusBadge from "./StatusBadge";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 
 function useElapsed(startTime: string | undefined, isRunning: boolean) {
   const [elapsed, setElapsed] = useState("");
@@ -34,6 +40,37 @@ function formatDuration(ms: number): string {
   return `${h}h ${m % 60}m`;
 }
 
+function TruncatedTitle({ title, className }: { title: string; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [isTruncated, setIsTruncated] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el) setIsTruncated(el.scrollWidth > el.clientWidth);
+  }, [title]);
+
+  const inner = (
+    <span ref={ref} className={`truncate block ${className ?? ""}`}>
+      {title}
+    </span>
+  );
+
+  if (!isTruncated) return inner;
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger className="min-w-0 max-w-full text-left">
+          {inner}
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-sm">
+          {title}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 export default function TaskRow({ task }: { task: Task }) {
   const isRunning = task.status === "in_progress";
   const elapsed = useElapsed(task.updatedAt, isRunning);
@@ -50,9 +87,10 @@ export default function TaskRow({ task }: { task: Task }) {
       style={{ borderLeftWidth: "3px", borderLeftColor: `var(--priority-${task.priority})` }}
     >
       <div className="flex-1 min-w-0">
-        <span className={`text-sm ${task.status === "cancelled" ? "line-through text-muted-foreground" : ""}`}>
-          {task.title}
-        </span>
+        <TruncatedTitle
+          title={task.title}
+          className={`text-sm ${task.status === "cancelled" ? "line-through text-muted-foreground" : ""}`}
+        />
         {task.tags && task.tags.length > 0 && (
           <span className="ml-2 text-xs text-muted-foreground">
             {task.tags.map((t) => `#${t}`).join(" ")}

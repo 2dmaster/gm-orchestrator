@@ -30,7 +30,13 @@ export function createServer(deps: ServerDeps): { app: express.Express; start: (
   // Call after mounting API routes so the catch-all doesn't shadow them
   function mountStaticUI(): void {
     const __dirname = dirname(fileURLToPath(import.meta.url));
-    const uiDir = resolve(__dirname, '..', 'ui');
+    // Production: dist/ui/ (relative to dist/server/)
+    // Dev (tsx): ui/dist/ (relative to project root via src/server/)
+    const candidates = [
+      resolve(__dirname, '..', 'ui'),                    // production: dist/ui
+      resolve(process.cwd(), 'ui', 'dist'),              // dev: <project>/ui/dist
+    ];
+    const uiDir = candidates.find((d) => existsSync(resolve(d, 'index.html'))) ?? candidates[0]!;
     const indexPath = resolve(uiDir, 'index.html');
     if (existsSync(uiDir) && existsSync(indexPath)) {
       app.use(express.static(uiDir));

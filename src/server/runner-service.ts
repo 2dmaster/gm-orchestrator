@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   OrchestratorConfig,
   GraphMemoryPort,
@@ -15,6 +15,8 @@ import type { Logger, TaskResultMeta } from '../infra/logger.js';
 import type { WebSocketBus } from './ws.js';
 import type { RunnerService } from './api.js';
 import { runSprint, runEpic } from '../core/orchestrator.js';
+import { createScheduler } from '../core/scheduler.js';
+import type { Scheduler, RunRequest } from '../core/scheduler.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -28,6 +30,18 @@ export interface RunSnapshot {
   recentLines: string[];
 }
 
+export interface MultiRunSnapshot {
+  slots: Array<{
+    id: number;
+    status: string;
+    projectId: string | null;
+    activeTask: Task | null;
+    completedTasks: Task[];
+  }>;
+  queue: Array<{ id: string; projectId: string; mode: string }>;
+  aggregateStats: SprintStats;
+}
+
 export interface RunnerServiceDeps {
   config: OrchestratorConfig;
   gm: GraphMemoryPort;
@@ -35,6 +49,12 @@ export interface RunnerServiceDeps {
   poller: TaskPollerPort;
   logger: Logger;
   wsBus: WebSocketBus;
+  resolveGm?: (projectId: string) => GraphMemoryPort;
+  resolvePoller?: (projectId: string) => TaskPollerPort;
+}
+
+function truncate(str: string, maxLen: number): string {
+  return str.length > maxLen ? str.slice(0, maxLen) + '…' : str;
 }
 
 // ─── Implementation ──────────────────────────────────────────────────────
@@ -119,80 +139,157 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     };
   }
 
-  // Wraps the injected runner to intercept stdout and emit log:line events.
+  // Wraps the Agent SDK to stream structured events and emit log:line for backward compat.
   // In dry-run mode the orchestrator skips runner.run(), so this is safe.
   function createStreamingRunner(): ClaudeRunnerPort {
     return {
       async run(task: Task, config: OrchestratorConfig): Promise<void> {
         const active = getActiveProject(config);
-        const prompt = buildPrompt(task, { projectId: active?.projectId ?? '' });
-        const args = ['--print', '--dangerously-skip-permissions', ...config.claudeArgs, prompt];
+        const projectId = active?.projectId ?? '';
+        const prompt = buildPrompt(task, { projectId });
 
-        return new Promise((resolve, reject) => {
-          const proc = spawn('claude', args, {
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: process.env,
-            detached: true,
-          });
+        // Build MCP server config for GraphMemory access
+        const mcpBaseUrl = active?.baseUrl ?? 'http://localhost:3000';
+        const mcpServers: Record<string, { command: string; args: string[] }> = {
+          'graph-memory': {
+            command: 'npx',
+            args: ['-y', 'mcp-remote', `${mcpBaseUrl}/mcp/${projectId}`],
+          },
+        };
 
-          // Stream stdout line by line
-          if (proc.stdout) {
-            let buffer = '';
-            proc.stdout.on('data', (chunk: Buffer) => {
-              buffer += chunk.toString();
-              const lines = buffer.split('\n');
-              buffer = lines.pop() ?? '';
-              for (const line of lines) {
-                pushLogLine(line);
-                emit({ type: 'log:line', payload: { taskId: task.id, line } });
-              }
-            });
-            proc.stdout.on('end', () => {
-              if (buffer) {
-                pushLogLine(buffer);
-                emit({ type: 'log:line', payload: { taskId: task.id, line: buffer } });
-              }
-            });
-          }
+        const abortSignal = activeAbort?.signal;
+        let turnCount = 0;
 
-          // Also stream stderr
-          if (proc.stderr) {
-            let buffer = '';
-            proc.stderr.on('data', (chunk: Buffer) => {
-              buffer += chunk.toString();
-              const lines = buffer.split('\n');
-              buffer = lines.pop() ?? '';
-              for (const line of lines) {
-                pushLogLine(`[stderr] ${line}`);
-                emit({ type: 'log:line', payload: { taskId: task.id, line: `[stderr] ${line}` } });
-              }
-            });
-          }
+        // Inactivity watchdog: abort if no SDK events for agentTimeoutMs
+        let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+        let watchdogWarned = false;
+        const watchdogMs = config.agentTimeoutMs;
+        const warningMs = Math.max(Math.floor(watchdogMs * 0.6), 30_000);
 
-          // Handle abort — kill entire process group
-          if (activeAbort) {
-            activeAbort.signal.addEventListener('abort', () => {
-              if (proc.pid) {
-                try {
-                  process.kill(-proc.pid, 'SIGTERM');
-                } catch {
-                  proc.kill('SIGTERM');
-                }
-              } else {
-                proc.kill('SIGTERM');
-              }
-            });
-          }
-
-          proc.on('close', () => resolve());
-          proc.on('error', (err) => {
-            if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-              reject(new Error('claude not found in PATH'));
-            } else {
-              reject(err);
+        function resetWatchdog(): void {
+          watchdogWarned = false;
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          // First fire a warning at 60% of timeout, then abort at 100%
+          watchdogTimer = setTimeout(() => {
+            if (!watchdogWarned) {
+              watchdogWarned = true;
+              emit({
+                type: 'agent:warning',
+                payload: {
+                  taskId: task.id,
+                  message: `No agent activity for ${Math.round(warningMs / 1000)}s — may be stuck`,
+                },
+              });
+              // Set final abort timer for the remaining time
+              watchdogTimer = setTimeout(() => {
+                emit({
+                  type: 'agent:warning',
+                  payload: {
+                    taskId: task.id,
+                    message: `Agent inactive for ${Math.round(watchdogMs / 1000)}s — aborting task`,
+                  },
+                });
+                activeAbort?.abort();
+              }, watchdogMs - warningMs);
             }
-          });
-        });
+          }, warningMs);
+        }
+
+        resetWatchdog();
+
+        try {
+        for await (const message of query({
+          prompt,
+          options: {
+            cwd: process.cwd(),
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            maxTurns: config.maxTurns,
+            mcpServers,
+            settingSources: ['project'],
+            ...(abortSignal ? { abortSignal } : {}),
+          },
+        })) {
+          resetWatchdog();
+          const msg = message as Record<string, unknown>;
+          const msgType = msg.type as string | undefined;
+
+          // ── Result (final message) ──
+          if (msgType === 'result') {
+            const line = msg.result as string;
+            if (line) {
+              pushLogLine(line);
+              emit({ type: 'log:line', payload: { taskId: task.id, line } });
+            }
+            const numTurns = msg.num_turns as number | undefined;
+            if (numTurns) {
+              emit({ type: 'agent:turn', payload: { taskId: task.id, turn: numTurns } });
+            }
+            const usage = msg.usage as Record<string, number> | undefined;
+            emit({
+              type: 'agent:cost',
+              payload: {
+                taskId: task.id,
+                costUsd: (msg.total_cost_usd as number) ?? 0,
+                inputTokens: usage?.input_tokens ?? 0,
+                outputTokens: usage?.output_tokens ?? 0,
+              },
+            });
+            continue;
+          }
+
+          // ── Assistant message (tool calls, text, thinking) ──
+          if (msgType === 'assistant') {
+            const assistantMsg = msg.message as Record<string, unknown> | undefined;
+            const content = assistantMsg?.content as Array<Record<string, unknown>> | undefined;
+            if (!content) continue;
+
+            turnCount++;
+            emit({ type: 'agent:turn', payload: { taskId: task.id, turn: turnCount } });
+
+            for (const block of content) {
+              const blockType = block.type as string;
+
+              if (blockType === 'tool_use') {
+                const toolName = (block.name as string) ?? 'unknown';
+                const toolInput = truncate(JSON.stringify(block.input ?? ''), 500);
+                emit({ type: 'agent:tool_start', payload: { taskId: task.id, tool: toolName, input: toolInput } });
+                pushLogLine(`[tool] ${toolName}: ${toolInput}`);
+                emit({ type: 'log:line', payload: { taskId: task.id, line: `[tool] ${toolName}: ${toolInput}` } });
+              } else if (blockType === 'text') {
+                const text = (block.text as string) ?? '';
+                if (text) {
+                  pushLogLine(text);
+                  emit({ type: 'log:line', payload: { taskId: task.id, line: text } });
+                }
+              } else if (blockType === 'thinking') {
+                const text = (block.thinking as string) ?? '';
+                if (text) {
+                  emit({ type: 'agent:thinking', payload: { taskId: task.id, text: truncate(text, 300) } });
+                }
+              }
+            }
+            continue;
+          }
+
+          // ── User message (tool results) ──
+          if (msgType === 'user') {
+            const userMsg = msg.message as Record<string, unknown> | undefined;
+            const content = userMsg?.content as Array<Record<string, unknown>> | undefined;
+            if (!content) continue;
+
+            for (const block of content) {
+              if (block.type === 'tool_result') {
+                const toolOutput = truncate(JSON.stringify(block.content ?? ''), 500);
+                emit({ type: 'agent:tool_end', payload: { taskId: task.id, tool: 'result', output: toolOutput } });
+              }
+            }
+            continue;
+          }
+        }
+        } finally {
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+        }
       },
     };
   }
@@ -319,6 +416,112 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info('Runner: stopped');
   }
 
+  // ─── Multi-project scheduler ───────────────────────────────────────────
+
+  let scheduler: Scheduler | null = null;
+
+  const PRIORITY_MAP: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+  function ensureScheduler(): Scheduler {
+    if (scheduler) return scheduler;
+
+    scheduler = createScheduler(deps.config, {
+      resolveGm: (projectId) => deps.resolveGm ? deps.resolveGm(projectId) : deps.gm,
+      createRunner: (_projectId) => deps.config.dryRun ? deps.runner : createStreamingRunner(),
+      createPoller: (projectId) => deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller,
+      logger: createWsLogger(),
+    }, {
+      onSlotStarted: (slotId, request) => {
+        logger.info(`Scheduler: slot ${slotId} started ${request.mode} for project "${request.projectId}"`);
+        emit({
+          type: 'scheduler:slot_started',
+          payload: { slotId, projectId: request.projectId, mode: request.mode },
+        });
+      },
+      onSlotCompleted: (slotId, request, stats) => {
+        logger.info(`Scheduler: slot ${slotId} completed for project "${request.projectId}"`);
+        emit({
+          type: 'scheduler:slot_completed',
+          payload: { slotId, projectId: request.projectId, stats },
+        });
+      },
+      onSlotError: (slotId, request, error) => {
+        logger.error(`Scheduler: slot ${slotId} error for project "${request.projectId}": ${error.message}`);
+        emit({ type: 'error', payload: { message: error.message, projectId: request.projectId } });
+      },
+      onQueueDrained: () => {
+        logger.info('Scheduler: all runs complete');
+        emit({ type: 'scheduler:drained' });
+        state = 'idle';
+        scheduler = null;
+      },
+    });
+
+    return scheduler;
+  }
+
+  async function startMultiSprint(
+    projectIds: string[],
+    tag?: string,
+    priority?: string,
+  ): Promise<string[]> {
+    if (state !== 'idle' && !scheduler) {
+      throw new Error('A run is already in progress');
+    }
+
+    state = 'running';
+    const sched = ensureScheduler();
+    const priorityNum = PRIORITY_MAP[priority ?? 'medium'] ?? 2;
+
+    const requestIds = projectIds.map((projectId) => {
+      const reqId = sched.enqueue({
+        projectId,
+        mode: 'sprint',
+        tag,
+        priority: priorityNum,
+      });
+      emit({
+        type: 'scheduler:enqueued',
+        payload: { requestId: reqId, projectId, mode: 'sprint' },
+      });
+      return reqId;
+    });
+
+    sched.start();
+    return requestIds;
+  }
+
+  function getMultiRunSnapshot(): MultiRunSnapshot {
+    if (!scheduler) {
+      return {
+        slots: [],
+        queue: [],
+        aggregateStats: { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 },
+      };
+    }
+
+    return {
+      slots: scheduler.slots.map((s) => ({
+        id: s.id,
+        status: s.status,
+        projectId: s.projectId,
+        activeTask: s.activeTask,
+        completedTasks: [...s.completedTasks],
+      })),
+      queue: scheduler.queue.map((r) => ({
+        id: r.id,
+        projectId: r.projectId,
+        mode: r.mode,
+      })),
+      aggregateStats: scheduler.aggregateStats,
+    };
+  }
+
+  function cancelQueued(requestId: string): boolean {
+    if (!scheduler) return false;
+    return scheduler.cancel(requestId);
+  }
+
   return {
     get isRunning() {
       return state !== 'idle';
@@ -330,8 +533,18 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
         recentLines: [...recentLines],
       };
     },
+    getMultiRunSnapshot,
     startSprint,
     startEpic,
-    stop,
+    startMultiSprint,
+    cancelQueued,
+    stop: async () => {
+      // Stop scheduler if active
+      if (scheduler) {
+        await scheduler.stop();
+        scheduler = null;
+      }
+      await stop();
+    },
   };
 }

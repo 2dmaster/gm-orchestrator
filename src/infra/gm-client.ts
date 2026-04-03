@@ -4,6 +4,7 @@ import type {
   TaskStatus,
   Epic,
   EpicStatus,
+  CrossProjectResolver,
 } from '../core/types.js';
 
 interface ClientOptions {
@@ -71,6 +72,11 @@ export class GraphMemoryClient implements GraphMemoryPort {
 
   async updateTask(taskId: string, fields: Partial<Task>): Promise<void> {
     await this.put(`/tasks/${taskId}`, fields);
+  }
+
+  async getTaskStatus(taskId: string): Promise<TaskStatus> {
+    const task = await this.getTask(taskId);
+    return task.status;
   }
 
   // ── Epics ─────────────────────────────────────────────────────────────

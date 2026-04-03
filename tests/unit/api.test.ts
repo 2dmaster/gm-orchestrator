@@ -126,6 +126,89 @@ describe('API routes', () => {
     });
   });
 
+  // ── GET /api/projects/overview ───────────────────────────────────────
+
+  describe('GET /api/projects/overview', () => {
+    it('returns empty array when no projects configured', async () => {
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
+      const res = await fetch(`${baseUrl}/api/projects/overview`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.projects).toEqual([]);
+    });
+
+    it('returns project overviews with task counts', async () => {
+      // The endpoint fetches directly from GM servers, not through the local gmClient.
+      // We need to set up a mini GM server to respond to the overview endpoint's fetch calls.
+      // For a unit test, we'll test with the configured project pointing at our test server.
+      // Since the endpoint makes direct HTTP calls to project baseUrls, we create a mock.
+      const gmApp = express();
+      gmApp.use(express.json());
+      gmApp.get('/api/projects/test-project/tasks', (_req, res) => {
+        res.json({
+          results: [
+            { id: 't1', title: 'A', status: 'todo', priority: 'high', createdAt: '', updatedAt: '' },
+            { id: 't2', title: 'B', status: 'done', priority: 'low', createdAt: '', updatedAt: '' },
+            { id: 't3', title: 'C', status: 'in_progress', priority: 'medium', createdAt: '', updatedAt: '' },
+          ],
+        });
+      });
+      gmApp.get('/api/projects/test-project/epics', (_req, res) => {
+        res.json({ results: [{ id: 'e1' }, { id: 'e2' }] });
+      });
+
+      // Start the mock GM server
+      const gmServer = await new Promise<Server>((resolve) => {
+        const s = gmApp.listen(0, () => resolve(s));
+      });
+      const gmPort = (gmServer.address() as import('net').AddressInfo).port;
+
+      try {
+        const config = makeConfig({
+          projects: [{ baseUrl: `http://localhost:${gmPort}`, projectId: 'test-project' }],
+          activeProjectId: 'test-project',
+        });
+        await startApp({ config });
+
+        const res = await fetch(`${baseUrl}/api/projects/overview`);
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.projects).toHaveLength(1);
+
+        const proj = body.projects[0];
+        expect(proj.projectId).toBe('test-project');
+        expect(proj.taskCounts.todo).toBe(1);
+        expect(proj.taskCounts.in_progress).toBe(1);
+        expect(proj.taskCounts.done).toBe(1);
+        expect(proj.taskCounts.total).toBe(3);
+        expect(proj.epicCount).toBe(2);
+        expect(proj.error).toBeUndefined();
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          gmServer.close((err) => (err ? reject(err) : resolve()))
+        );
+      }
+    });
+
+    it('returns error field when project GM server is unreachable', async () => {
+      const config = makeConfig({
+        projects: [{ baseUrl: 'http://localhost:59999', projectId: 'dead-project' }],
+        activeProjectId: 'dead-project',
+      });
+      await startApp({ config });
+
+      const res = await fetch(`${baseUrl}/api/projects/overview`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.projects).toHaveLength(1);
+      expect(body.projects[0].error).toBeDefined();
+      expect(body.projects[0].taskCounts.total).toBe(0);
+    });
+  });
+
   // ── GET /api/projects/:id/tasks ─────────────────────────────────────
 
   describe('GET /api/projects/:id/tasks', () => {

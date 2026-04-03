@@ -6,9 +6,11 @@ import type {
   SprintStats,
   Task,
   TaskRunResult,
+  CrossProjectResolver,
+  CrossProjectTask,
 } from './types.js';
 import { getActiveProject } from './types.js';
-import { sortByPriority, areBlockersResolved } from './task-utils.js';
+import { sortByPriority, areBlockersResolved, areBlockersResolvedAsync } from './task-utils.js';
 import type { Logger } from '../infra/logger.js';
 
 interface Ports {
@@ -17,6 +19,11 @@ interface Ports {
   poller: TaskPollerPort;
   logger: Logger;
   signal?: AbortSignal;
+  /**
+   * Optional resolver for cross-project blockers.
+   * When provided, `findNextRunnable` will check blockers in other projects.
+   */
+  crossProjectResolver?: CrossProjectResolver;
 }
 
 /**
@@ -67,7 +74,7 @@ export async function runSprint(
       return stats;
     }
 
-    const next = findNextRunnable(queue, logger);
+    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver);
 
     if (!next) {
       logger.warn(`${queue.length} tasks remain but all are blocked — stopping`);
@@ -91,6 +98,7 @@ export async function runSprint(
 /**
  * Runs all tasks belonging to an epic, in priority order with blocker checks.
  * Marks the epic done when all tasks complete.
+ * Supports cross-project blockers when a CrossProjectResolver is injected.
  */
 export async function runEpic(
   epicId: string,
@@ -137,7 +145,7 @@ export async function runEpic(
       return stats;
     }
 
-    const next = findNextRunnable(queue, logger);
+    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver);
 
     if (!next) {
       logger.warn('All remaining epic tasks are blocked — stopping');
@@ -159,9 +167,27 @@ export async function runEpic(
 
 // ── Internal ──────────────────────────────────────────────────────────────
 
-function findNextRunnable(queue: Task[], logger: Logger): Task | null {
+/**
+ * Finds the next runnable task in the queue, respecting both same-project
+ * and cross-project blockers. If a CrossProjectResolver is provided,
+ * blockers with a `projectId` field are resolved asynchronously against
+ * the remote project.
+ */
+async function findNextRunnable(
+  queue: Task[],
+  logger: Logger,
+  resolver?: CrossProjectResolver,
+): Promise<Task | null> {
   for (const task of queue) {
-    if (areBlockersResolved(task)) return task;
+    // Fast path: no cross-project blockers or no resolver
+    const hasCrossProjectBlockers = task.blockedBy?.some((b) => b.projectId);
+    if (!hasCrossProjectBlockers || !resolver) {
+      if (areBlockersResolved(task)) return task;
+    } else {
+      // Slow path: resolve cross-project blockers
+      const resolved = await areBlockersResolvedAsync(task, resolver);
+      if (resolved) return task;
+    }
     logger.skip(`blocked: "${task.title}"`);
   }
   return null;
@@ -256,6 +282,53 @@ async function handleResult(
     logger.error(`Giving up on: ${task.id}`);
     await gm.moveTask(task.id, 'cancelled').catch(() => {});
   }
+}
+
+/**
+ * Collect tasks for a cross-project epic.
+ * Fetches the epic from the "home" project, then gathers tasks from all
+ * referenced projects. Each task is annotated with `sourceProjectId`.
+ */
+export async function collectCrossProjectEpicTasks(
+  epicId: string,
+  homePorts: Pick<Ports, 'gm' | 'logger'>,
+  resolveGm: (projectId: string) => GraphMemoryPort,
+  homeProjectId: string,
+): Promise<{ epic: Awaited<ReturnType<GraphMemoryPort['getEpic']>>; tasks: CrossProjectTask[] }> {
+  const { gm, logger } = homePorts;
+
+  const epic = await gm.getEpic(epicId);
+  const taskRefs = epic.tasks ?? [];
+
+  // Group task refs by project — refs without projectId belong to the home project
+  const byProject = new Map<string, string[]>();
+  for (const ref of taskRefs) {
+    const pid = ref.projectId ?? homeProjectId;
+    const ids = byProject.get(pid) ?? [];
+    ids.push(ref.id);
+    byProject.set(pid, ids);
+  }
+
+  // Fetch tasks from each project in parallel
+  const allTasks: CrossProjectTask[] = [];
+  await Promise.all(
+    [...byProject.entries()].map(async ([projectId, taskIds]) => {
+      try {
+        const client = projectId === homeProjectId ? gm : resolveGm(projectId);
+        const taskIdSet = new Set(taskIds);
+        const tasks = await client.listTasks({ limit: 500 });
+        for (const t of tasks) {
+          if (taskIdSet.has(t.id)) {
+            allTasks.push({ ...t, sourceProjectId: projectId });
+          }
+        }
+      } catch (err) {
+        logger.warn(`Failed to fetch tasks from project "${projectId}": ${String(err)}`);
+      }
+    }),
+  );
+
+  return { epic, tasks: allTasks };
 }
 
 function logStats(logger: Logger, stats: SprintStats): void {
