@@ -1,6 +1,6 @@
 {
   "name": "gm-orchestrator",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Tokenless Claude Code orchestrator for GraphMemory — AI-first, TypeScript",
   "type": "module",
   "main": "dist/index.js",
@@ -46,8 +46,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vachick/gm-orchestrator-ts.git"
+    "url": "git+https://github.com/2dmaster/gm-orchestrator.git"
   },
+  "bugs": {
+    "url": "https://github.com/2dmaster/gm-orchestrator/issues"
+  },
+  "homepage": "https://github.com/2dmaster/gm-orchestrator#readme",
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",

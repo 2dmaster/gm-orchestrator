@@ -1,5 +1,6 @@
 import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import type { Server } from 'http';
 import type { Logger } from '../infra/logger.js';
@@ -28,7 +29,8 @@ export function createServer(deps: ServerDeps): { app: express.Express; start: (
 
   // Call after mounting API routes so the catch-all doesn't shadow them
   function mountStaticUI(): void {
-    const uiDir = resolve(process.cwd(), 'dist', 'ui');
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const uiDir = resolve(__dirname, '..', 'ui');
     if (existsSync(uiDir)) {
       app.use(express.static(uiDir));
       // SPA fallback — serve index.html for unmatched routes
