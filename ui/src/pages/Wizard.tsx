@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Hexagon, Loader2, Check, ArrowLeft, ArrowRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -565,30 +565,36 @@ export default function Wizard() {
     })();
   }, [navigate]);
 
-  // Auto-discover servers when entering the discover step
-  const discoverServers = useCallback(async () => {
-    setDiscoverLoading(true);
-    try {
-      const res = await fetch("/api/projects");
-      if (res.ok) {
-        const data = await res.json();
-        const found: GMServer[] = data.servers ?? [];
-        setServers(found);
-        if (found.length > 0 && !selectedServer) {
-          setSelectedServer(found[0].url);
-        }
-      }
-    } catch {
-      // Discovery failed — user can enter manually
-    }
-    setDiscoverLoading(false);
-  }, [selectedServer]);
+  // Auto-discover servers once when first entering the discover step
+  const discoveredRef = useRef(false);
 
   useEffect(() => {
-    if (step === "discover") {
-      discoverServers();
-    }
-  }, [step, discoverServers]);
+    if (step !== "discover" || discoveredRef.current) return;
+    discoveredRef.current = true;
+    setDiscoverLoading(true);
+    (async () => {
+      try {
+        const res = await fetch("/api/projects");
+        if (res.ok) {
+          const data = await res.json();
+          const found: GMServer[] = data.servers ?? [];
+          setServers((prev) => {
+            const merged = [...prev];
+            for (const s of found) {
+              if (!merged.some((m) => m.url === s.url)) {
+                merged.push(s);
+              }
+            }
+            return merged;
+          });
+          setSelectedServer((prev) => prev || (found.length > 0 ? found[0].url : ""));
+        }
+      } catch {
+        // Discovery failed — user can enter manually
+      }
+      setDiscoverLoading(false);
+    })();
+  }, [step]);
 
   const [manualProbing, setManualProbing] = useState(false);
 
