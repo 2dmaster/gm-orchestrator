@@ -27,8 +27,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 function makeDeps(overrides: Partial<RunnerServiceDeps> = {}): RunnerServiceDeps {
   const config: OrchestratorConfig = {
-    baseUrl: 'http://localhost:3000',
-    projectId: 'test-project',
+    projects: [{ baseUrl: 'http://localhost:3000', projectId: 'test-project' }],
+    activeProjectId: 'test-project',
+    concurrency: 1,
     timeoutMs: 60_000,
     pauseMs: 0,
     maxRetries: 0,
@@ -73,6 +74,7 @@ function makeDeps(overrides: Partial<RunnerServiceDeps> = {}): RunnerServiceDeps
     skip: vi.fn(),
     section: vi.fn(),
     task: vi.fn(),
+    taskResult: vi.fn(),
   };
 
   const wsBus: WebSocketBus = {

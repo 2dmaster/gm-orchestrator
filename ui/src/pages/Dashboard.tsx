@@ -66,8 +66,8 @@ export default function Dashboard() {
         const res = await fetch("/api/status");
         if (!res.ok) return;
         const data = await res.json();
-        if (data.config?.projectId) {
-          setProjectId(data.config.projectId);
+        if (data.config?.activeProjectId) {
+          setProjectId(data.config.activeProjectId);
         } else {
           navigate("/", { replace: true });
         }

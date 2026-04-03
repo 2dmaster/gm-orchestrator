@@ -1,5 +1,8 @@
 // ─── GraphMemory Server Discovery ─────────────────────────────────────────
-// Scans localhost ports 3000–3010 to find running GraphMemory instances.
+// Scans localhost ports to find running GraphMemory instances.
+// Supports configurable port ranges, explicit server URLs, and per-port timeout.
+
+import type { DiscoveryConfig } from '../core/types.js';
 
 export interface GMServerProject {
   id: string;
@@ -13,20 +16,20 @@ export interface GMServer {
   projects: GMServerProject[];
 }
 
-const PORT_START = 3000;
-const PORT_END = 3010;
-const TIMEOUT_MS = 500;
+const DEFAULT_PORT_START = 3000;
+const DEFAULT_PORT_END = 3100;
+const DEFAULT_TIMEOUT_MS = 500;
 
 /**
  * Probe a single port for a running GraphMemory server.
  * Tries GET /api/projects first; falls back to GET /api/health.
  */
-async function probePort(port: number): Promise<GMServer | null> {
+async function probePort(port: number, timeoutMs: number): Promise<GMServer | null> {
   const base = `http://127.0.0.1:${port}`;
 
   try {
     const res = await fetch(`${base}/api/projects`, {
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (res.ok) {
@@ -43,7 +46,7 @@ async function probePort(port: number): Promise<GMServer | null> {
 
   try {
     const res = await fetch(`${base}/api/health`, {
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (res.ok) {
@@ -60,14 +63,15 @@ async function probePort(port: number): Promise<GMServer | null> {
  * Probe a single URL for a running GraphMemory server.
  * Public wrapper around the internal probePort — accepts any URL, not just localhost.
  */
-export async function probeServer(url: string): Promise<GMServer | null> {
+export async function probeServer(url: string, timeoutMs?: number): Promise<GMServer | null> {
+  const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const parsed = new URL(url);
   const port = parseInt(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'), 10);
   const base = `${parsed.protocol}//${parsed.host}`;
 
   try {
     const res = await fetch(`${base}/api/projects`, {
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeout),
     });
     if (res.ok) {
       const data = (await res.json()) as { results?: GMServerProject[] };
@@ -77,7 +81,7 @@ export async function probeServer(url: string): Promise<GMServer | null> {
 
   try {
     const res = await fetch(`${base}/api/health`, {
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeout),
     });
     if (res.ok) {
       return { url: base, port, projects: [] };
@@ -88,22 +92,40 @@ export async function probeServer(url: string): Promise<GMServer | null> {
 }
 
 /**
- * Auto-discover GraphMemory servers on localhost ports 3000–3010.
- * Scans all ports in parallel and returns responding servers.
+ * Auto-discover GraphMemory servers.
+ * Scans localhost ports in the configured range and probes any explicit server URLs.
+ * All probes run in parallel.
  */
-export async function discoverServers(): Promise<GMServer[]> {
+export async function discoverServers(config?: DiscoveryConfig): Promise<GMServer[]> {
+  const portStart = config?.portRange?.[0] ?? DEFAULT_PORT_START;
+  const portEnd = config?.portRange?.[1] ?? DEFAULT_PORT_END;
+  const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const extraServers = config?.extraServers ?? [];
+
   const ports = Array.from(
-    { length: PORT_END - PORT_START + 1 },
-    (_, i) => PORT_START + i,
+    { length: portEnd - portStart + 1 },
+    (_, i) => portStart + i,
   );
 
-  const results = await Promise.allSettled(ports.map(probePort));
+  // Probe port range + explicit URLs in parallel
+  const portProbes = ports.map((p) => probePort(p, timeoutMs));
+  const urlProbes = extraServers.map((url) => probeServer(url, timeoutMs));
 
-  return results
+  const results = await Promise.allSettled([...portProbes, ...urlProbes]);
+
+  const servers = results
     .filter(
       (r): r is PromiseFulfilledResult<GMServer | null> =>
         r.status === 'fulfilled',
     )
     .map((r) => r.value)
     .filter((server): server is GMServer => server !== null);
+
+  // Deduplicate by URL (explicit URLs may overlap with port range)
+  const seen = new Set<string>();
+  return servers.filter((s) => {
+    if (seen.has(s.url)) return false;
+    seen.add(s.url);
+    return true;
+  });
 }

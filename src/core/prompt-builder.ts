@@ -1,4 +1,4 @@
-import type { Task, OrchestratorConfig } from './types.js';
+import type { Task } from './types.js';
 
 /**
  * Builds a self-contained, autonomous prompt for a single Claude Code session.
@@ -22,7 +22,7 @@ import type { Task, OrchestratorConfig } from './types.js';
  * 5. MINIMAL PROMPT — only what's needed. The description might be empty
  *    deliberately (Claude fetches full context via tasks_get). Don't pad.
  */
-export function buildPrompt(task: Task, config: Pick<OrchestratorConfig, 'projectId'>): string {
+export function buildPrompt(task: Task, config: { projectId: string }): string {
   const sections: string[] = [];
 
   sections.push(`# Autonomous Task Execution`);

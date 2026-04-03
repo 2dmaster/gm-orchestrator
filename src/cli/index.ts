@@ -11,6 +11,7 @@ import { createWebSocketServer } from '../server/ws.js';
 import { createRunnerService } from '../server/runner-service.js';
 import { discoverServers } from '../infra/gm-discovery.js';
 import type { OrchestratorConfig } from '../core/types.js';
+import { getActiveProject } from '../core/types.js';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────
 
@@ -43,7 +44,15 @@ function parseArgs(argv: string[]): ParsedArgs {
       case '--headless': result.headless = true; break;
       case '--help': case '-h': printHelp(); process.exit(0); break;
       case '--config-path': result.overrides.configPath = args[++i]!; break;
-      case '--project': case '-p': result.overrides.projectId = args[++i]!; break;
+      case '--project': case '-p': {
+        const pid = args[++i]!;
+        result.overrides.activeProjectId = pid;
+        // Will be merged into projects array by loadConfig/mergeConfigs
+        if (!result.overrides.projects) result.overrides.projects = [];
+        const existing = result.overrides.projects.find((p) => p.projectId === pid);
+        if (!existing) result.overrides.projects.push({ baseUrl: 'http://localhost:3000', projectId: pid });
+        break;
+      }
       case '--tag': case '-t': result.overrides.tag = args[++i]!; break;
       case '--timeout': result.overrides.timeoutMs = Number(args[++i]!) * 60_000; break;
       case '--retries': result.overrides.maxRetries = Number(args[++i]!); break;
@@ -78,13 +87,18 @@ OPTIONS
 
 CONFIG FILE  (.gm-orchestrator.json)
   {
-    "baseUrl": "http://localhost:3000",
-    "projectId": "my-app",
-    "apiKey": "mgm-key-...",
+    "projects": [
+      { "baseUrl": "http://localhost:3000", "projectId": "my-app", "label": "My App" }
+    ],
+    "activeProjectId": "my-app",
+    "concurrency": 1,
     "timeoutMs": 900000,
     "maxRetries": 1,
     "claudeArgs": []
   }
+
+  Legacy format (auto-migrated):
+  { "baseUrl": "http://localhost:3000", "projectId": "my-app" }
 
 ENV VARS
   GM_BASE_URL / GM_PROJECT_ID / GM_API_KEY / GM_TIMEOUT_MS
@@ -98,7 +112,10 @@ async function main(): Promise<void> {
   const config = loadConfig(overrides);
 
   if (printConfig) {
-    const display = { ...config, apiKey: config.apiKey ? '***' : undefined };
+    const display = {
+      ...config,
+      projects: config.projects.map(({ apiKey, ...rest }) => ({ ...rest, ...(apiKey ? { apiKey: '***' } : {}) })),
+    };
     console.log(JSON.stringify(display, null, 2));
     return;
   }
@@ -117,9 +134,11 @@ async function main(): Promise<void> {
     // Server mode doesn't require projectId upfront — it's set via the UI
     const { app, start, mountStaticUI } = createServer({ logger: consoleLogger });
 
+    const active = getActiveProject(config);
     const gmClient = new GraphMemoryClient({
-      baseUrl: config.baseUrl,
-      projectId: config.projectId,
+      baseUrl: active?.baseUrl ?? 'http://localhost:3000',
+      projectId: active?.projectId ?? '',
+      ...(active?.apiKey !== undefined && { apiKey: active.apiKey }),
     });
 
     // Create a no-op WS bus for now — replaced after server starts
@@ -157,10 +176,11 @@ async function main(): Promise<void> {
 
   validateConfig(config);
 
+  const activeProj = getActiveProject(config);
   const gm = new GraphMemoryClient({
-    baseUrl: config.baseUrl,
-    projectId: config.projectId,
-    ...(config.apiKey !== undefined && { apiKey: config.apiKey }),
+    baseUrl: activeProj?.baseUrl ?? 'http://localhost:3000',
+    projectId: activeProj?.projectId ?? '',
+    ...(activeProj?.apiKey !== undefined && { apiKey: activeProj.apiKey }),
   });
 
   const ports = {
@@ -178,7 +198,7 @@ async function main(): Promise<void> {
     ]);
     const epics = await gm.listEpics().catch(() => []);
 
-    consoleLogger.section(`Status — ${config.projectId}`);
+    consoleLogger.section(`Status — ${activeProj?.projectId ?? '(none)'}`);
     console.log(`  todo:        ${todo.length}`);
     console.log(`  in_progress: ${inProgress.length}`);
     console.log(`  done:        ${done.length}`);

@@ -13,13 +13,16 @@ export type {
   TaskRef,
   Task,
   Epic,
+  ProjectEntry,
   OrchestratorConfig,
+  LegacyOrchestratorConfig,
   TaskRunResult,
   SprintStats,
   GraphMemoryPort,
   ClaudeRunnerPort,
   TaskPollerPort,
 } from './core/types.js';
+export { getActiveProject } from './core/types.js';
 
 // Infrastructure
 export { GraphMemoryClient } from './infra/gm-client.js';

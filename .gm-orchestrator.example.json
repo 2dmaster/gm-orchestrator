@@ -1,7 +1,14 @@
 {
-  "baseUrl": "http://localhost:3000",
-  "projectId": "my-app",
-  "apiKey": "",
+  "projects": [
+    {
+      "baseUrl": "http://localhost:3000",
+      "projectId": "my-app",
+      "apiKey": "",
+      "label": "My App"
+    }
+  ],
+  "activeProjectId": "my-app",
+  "concurrency": 1,
   "timeoutMs": 900000,
   "pauseMs": 2000,
   "maxRetries": 1,

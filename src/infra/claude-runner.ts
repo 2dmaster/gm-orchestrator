@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import type { ClaudeRunnerPort, Task, OrchestratorConfig } from '../core/types.js';
+import { getActiveProject } from '../core/types.js';
 import { buildPrompt } from '../core/prompt-builder.js';
 
 export class ClaudeRunner implements ClaudeRunnerPort {
@@ -13,7 +14,8 @@ export class ClaudeRunner implements ClaudeRunnerPort {
    * promise is awaited only for cleanup after the poller signals done.
    */
   async run(task: Task, config: OrchestratorConfig): Promise<void> {
-    const prompt = buildPrompt(task, { projectId: config.projectId });
+    const active = getActiveProject(config);
+    const prompt = buildPrompt(task, { projectId: active?.projectId ?? '' });
     const args = ['--print', '--dangerously-skip-permissions', ...config.claudeArgs, prompt];
 
     return new Promise((resolve, reject) => {

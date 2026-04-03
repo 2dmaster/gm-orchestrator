@@ -6,8 +6,9 @@ import { makeTask, makeEpic } from '../fixtures/factories.js';
 import type { OrchestratorConfig } from '../../src/core/types.js';
 
 const BASE_CONFIG: OrchestratorConfig = {
-  baseUrl: 'http://localhost:3000',
-  projectId: 'test',
+  projects: [{ baseUrl: 'http://localhost:3000', projectId: 'test' }],
+  activeProjectId: 'test',
+  concurrency: 1,
   timeoutMs: 5_000,
   pauseMs: 0,
   maxRetries: 1,

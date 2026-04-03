@@ -546,9 +546,9 @@ export default function Wizard() {
         const res = await fetch("/api/status");
         if (res.ok) {
           const data = await res.json();
-          if (data.config?.projectId && !data.setupRequired) {
+          if (data.config?.activeProjectId && !data.setupRequired) {
             try {
-              const projectRes = await fetch(`/api/projects/${data.config.projectId}/tasks?limit=1`);
+              const projectRes = await fetch(`/api/projects/${data.config.activeProjectId}/tasks?limit=1`);
               if (projectRes.ok) {
                 navigate("/dashboard", { replace: true });
                 return;
@@ -643,9 +643,10 @@ export default function Wizard() {
     setSaveError(null);
     try {
       const server = servers.find((s) => s.url === selectedServer);
+      const baseUrl = server?.url ?? selectedServer;
       const config = {
-        baseUrl: server?.url ?? selectedServer,
-        projectId: selectedProject,
+        projects: [{ baseUrl, projectId: selectedProject }],
+        activeProjectId: selectedProject,
         permissions,
         notifications,
       };
