@@ -7,10 +7,6 @@ import { FakeGraphMemory } from '../fixtures/fakes.js';
 import { makeTask, makeEpic } from '../fixtures/factories.js';
 import type { OrchestratorConfig } from '../../src/core/types.js';
 
-function getPort(): number {
-  return 10000 + Math.floor(Math.random() * 50000);
-}
-
 function makeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
   return {
     baseUrl: 'http://localhost:3000',
@@ -66,10 +62,12 @@ describe('API routes', () => {
 
   function startApp(depsOverrides: Partial<ApiDeps> = {}): Promise<void> {
     testApp = createTestApp(depsOverrides);
-    const port = getPort();
-    baseUrl = `http://localhost:${port}`;
     return new Promise((resolve) => {
-      server = testApp.app.listen(port, () => resolve());
+      server = testApp.app.listen(0, () => {
+        const addr = server!.address() as import('net').AddressInfo;
+        baseUrl = `http://localhost:${addr.port}`;
+        resolve();
+      });
     });
   }
 
