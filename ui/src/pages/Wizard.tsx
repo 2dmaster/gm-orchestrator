@@ -117,6 +117,7 @@ function DiscoverStep({
   servers,
   loading,
   manualUrl,
+  manualProbing,
   onManualUrlChange,
   onManualAdd,
   onNext,
@@ -125,6 +126,7 @@ function DiscoverStep({
   servers: GMServer[];
   loading: boolean;
   manualUrl: string;
+  manualProbing: boolean;
   onManualUrlChange: (url: string) => void;
   onManualAdd: () => void;
   onNext: () => void;
@@ -175,9 +177,9 @@ function DiscoverStep({
             <Button
               variant="secondary"
               onClick={onManualAdd}
-              disabled={!manualUrl.trim()}
+              disabled={!manualUrl.trim() || manualProbing}
             >
-              Add
+              {manualProbing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Add"}
             </Button>
           </div>
         </div>
@@ -588,17 +590,47 @@ export default function Wizard() {
     }
   }, [step, discoverServers]);
 
-  const handleManualAdd = useCallback(() => {
+  const [manualProbing, setManualProbing] = useState(false);
+
+  const handleManualAdd = useCallback(async () => {
     const url = manualUrl.trim().replace(/\/+$/, "");
     if (!url) return;
-    const port = parseInt(new URL(url).port || "3000", 10);
-    setServers((prev) => {
-      if (prev.some((s) => s.url === url)) return prev;
-      return [...prev, { url, port, projects: [] }];
-    });
-    if (!selectedServer) setSelectedServer(url);
-    setManualUrl("");
-  }, [manualUrl, selectedServer]);
+    try {
+      new URL(url);
+    } catch {
+      toast.error("Invalid URL");
+      return;
+    }
+    setManualProbing(true);
+    try {
+      const res = await fetch("/api/projects/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { server: GMServer };
+        setServers((prev) => {
+          const existing = prev.findIndex((s) => s.url === data.server.url);
+          if (existing >= 0) {
+            const updated = [...prev];
+            updated[existing] = data.server;
+            return updated;
+          }
+          return [...prev, data.server];
+        });
+        setSelectedServer(data.server.url);
+        setManualUrl("");
+        toast.success(`Found ${data.server.projects.length} project(s)`);
+      } else {
+        const err = await res.json().catch(() => ({ error: "Connection failed" }));
+        toast.error(err.error ?? "No GraphMemory server found at this URL");
+      }
+    } catch {
+      toast.error("Could not reach server");
+    }
+    setManualProbing(false);
+  }, [manualUrl]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -665,6 +697,7 @@ export default function Wizard() {
             servers={servers}
             loading={discoverLoading}
             manualUrl={manualUrl}
+            manualProbing={manualProbing}
             onManualUrlChange={setManualUrl}
             onManualAdd={handleManualAdd}
             onNext={goNext}

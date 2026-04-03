@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { OrchestratorConfig, GraphMemoryPort } from '../core/types.js';
 import type { Logger } from '../infra/logger.js';
 import type { GMServer } from '../infra/gm-discovery.js';
+import { probeServer } from '../infra/gm-discovery.js';
 
 // ─── RunnerService interface ────────────────────────────────────────────
 // Defined here to avoid circular dep — runner-service.ts will implement it.
@@ -47,6 +48,31 @@ export function createApiRouter(deps: ApiDeps): Router {
     try {
       const servers = await deps.gmDiscovery.discoverServers();
       res.json({ servers });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /api/projects/probe — probe a specific URL for a GraphMemory server
+  router.post('/api/projects/probe', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { url } = req.body as { url?: string };
+      if (!url || typeof url !== 'string') {
+        res.status(400).json({ error: 'url is required' });
+        return;
+      }
+      try {
+        new URL(url);
+      } catch {
+        res.status(400).json({ error: 'Invalid URL' });
+        return;
+      }
+      const server = await probeServer(url);
+      if (server) {
+        res.json({ server });
+      } else {
+        res.status(404).json({ error: 'No GraphMemory server found at this URL' });
+      }
     } catch (err) {
       next(err);
     }

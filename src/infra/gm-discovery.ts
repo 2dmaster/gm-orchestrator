@@ -57,6 +57,37 @@ async function probePort(port: number): Promise<GMServer | null> {
 }
 
 /**
+ * Probe a single URL for a running GraphMemory server.
+ * Public wrapper around the internal probePort — accepts any URL, not just localhost.
+ */
+export async function probeServer(url: string): Promise<GMServer | null> {
+  const parsed = new URL(url);
+  const port = parseInt(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'), 10);
+  const base = `${parsed.protocol}//${parsed.host}`;
+
+  try {
+    const res = await fetch(`${base}/api/projects`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { results?: GMServerProject[] };
+      return { url: base, port, projects: data.results ?? [] };
+    }
+  } catch { /* not reachable */ }
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (res.ok) {
+      return { url: base, port, projects: [] };
+    }
+  } catch { /* not a GM server */ }
+
+  return null;
+}
+
+/**
  * Auto-discover GraphMemory servers on localhost ports 3000–3010.
  * Scans all ports in parallel and returns responding servers.
  */
