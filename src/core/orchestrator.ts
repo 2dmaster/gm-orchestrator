@@ -7,6 +7,7 @@ import type {
   Task,
   TaskRunResult,
 } from './types.js';
+import { getActiveProject } from './types.js';
 import { sortByPriority, areBlockersResolved } from './task-utils.js';
 import type { Logger } from '../infra/logger.js';
 
@@ -15,6 +16,7 @@ interface Ports {
   runner: ClaudeRunnerPort;
   poller: TaskPollerPort;
   logger: Logger;
+  signal?: AbortSignal;
 }
 
 /**
@@ -35,9 +37,17 @@ export async function runSprint(
   const failedIds = new Set<string>();
   const retryCounts = new Map<string, number>();
 
-  logger.section(`Sprint — project: ${config.projectId}${config.tag ? `  tag: ${config.tag}` : ''}`);
+  const activeProject = getActiveProject(config);
+  const projectLabel = activeProject?.projectId ?? '(none)';
+  logger.section(`Sprint — project: ${projectLabel}${config.tag ? `  tag: ${config.tag}` : ''}`);
 
   while (true) {
+    if (ports.signal?.aborted) {
+      logger.warn('Sprint aborted');
+      stats.durationMs = Date.now() - startTime;
+      return stats;
+    }
+
     const tagFilter = config.tag !== undefined ? { tag: config.tag } : {};
     const [inProgress, todo] = await Promise.all([
       gm.listTasks({ status: 'in_progress', ...tagFilter }),
@@ -99,6 +109,12 @@ export async function runEpic(
   const retryCounts = new Map<string, number>();
 
   while (true) {
+    if (ports.signal?.aborted) {
+      logger.warn('Epic aborted');
+      stats.durationMs = Date.now() - startTime;
+      return stats;
+    }
+
     // Fetch fresh task list from the epic's dedicated endpoint
     const allTasks = await gm.listEpicTasks(epicId);
 
@@ -153,7 +169,7 @@ function findNextRunnable(queue: Task[], logger: Logger): Task | null {
 
 async function runOneTask(
   task: Task,
-  { gm, runner, poller, logger }: Ports,
+  { gm, runner, poller, logger, signal }: Ports,
   config: OrchestratorConfig
 ): Promise<TaskRunResult> {
   logger.task(task);
@@ -179,6 +195,7 @@ async function runOneTask(
   // Poll GraphMemory until task reaches terminal state
   const pollResult = await poller.waitForCompletion(task.id, {
     timeoutMs: config.timeoutMs,
+    ...(signal ? { signal } : {}),
   });
 
   await sessionPromise; // let process clean up
@@ -213,12 +230,14 @@ async function handleResult(
 
   if (result === 'done' || result === 'dry_run') {
     stats.done++;
+    logger.taskResult(task, 'done');
     return;
   }
 
   if (result === 'cancelled') {
     stats.cancelled++;
     failedIds.add(task.id);
+    logger.taskResult(task, 'cancelled');
     return;
   }
 
@@ -227,11 +246,13 @@ async function handleResult(
   if (retries < maxRetries) {
     retryCounts.set(task.id, retries + 1);
     stats.retried++;
+    logger.taskResult(task, 'timeout', { attempt: retries + 1, maxRetries });
     logger.warn(`Retrying (${retries + 1}/${maxRetries}): ${task.id}`);
     await gm.moveTask(task.id, 'todo').catch(() => {});
   } else {
     stats.errors++;
     failedIds.add(task.id);
+    logger.taskResult(task, 'timeout');
     logger.error(`Giving up on: ${task.id}`);
     await gm.moveTask(task.id, 'cancelled').catch(() => {});
   }

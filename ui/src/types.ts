@@ -50,9 +50,16 @@ export interface SprintStats {
   durationMs: number;
 }
 
-export interface OrchestratorConfig {
+export interface ProjectEntry {
   baseUrl: string;
   projectId: string;
+  label?: string; // human-friendly name for UI
+}
+
+export interface OrchestratorConfig {
+  projects: ProjectEntry[];
+  activeProjectId?: string; // last selected, for quick resume
+  concurrency: number;      // max parallel claude sessions (default 1)
   timeoutMs: number;
   pauseMs: number;
   maxRetries: number;
@@ -75,8 +82,16 @@ export type ServerEvent =
 
 export type ServerEventType = ServerEvent['type'];
 
+export interface RunSnapshot {
+  activeTask: Task | null;
+  completedTasks: Task[];
+  recentLines: string[];
+}
+
 export interface StatusResponse {
   version: string;
-  config: Omit<OrchestratorConfig, 'apiKey'>;
+  config: OrchestratorConfig;
   isRunning: boolean;
+  setupRequired: boolean;
+  run?: RunSnapshot;
 }

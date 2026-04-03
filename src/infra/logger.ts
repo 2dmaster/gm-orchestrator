@@ -1,8 +1,13 @@
-import type { Task } from '../core/types.js';
+import type { Task, TaskRunResult } from '../core/types.js';
 
 // ── Interface ─────────────────────────────────────────────────────────────
 // Defined here so core/orchestrator.ts can import the type.
 // Swap for a silent mock in tests.
+
+export interface TaskResultMeta {
+  attempt?: number;
+  maxRetries?: number;
+}
 
 export interface Logger {
   info(msg: string): void;
@@ -12,6 +17,7 @@ export interface Logger {
   skip(msg: string): void;
   section(msg: string): void;
   task(task: Task): void;
+  taskResult(task: Task, result: TaskRunResult, meta?: TaskResultMeta): void;
 }
 
 // ── Console implementation ────────────────────────────────────────────────
@@ -53,6 +59,7 @@ export const consoleLogger: Logger = {
     );
     console.log(`${C.dim}        id: ${task.id}${C.reset}`);
   },
+  taskResult: () => {},
 };
 
 // ── Silent logger for tests ───────────────────────────────────────────────
@@ -65,4 +72,5 @@ export const silentLogger: Logger = {
   skip: () => {},
   section: () => {},
   task: () => {},
+  taskResult: () => {},
 };

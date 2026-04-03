@@ -16,6 +16,7 @@ const mockLogger: Logger = {
   skip: vi.fn(),
   section: vi.fn(),
   task: vi.fn(),
+  taskResult: vi.fn(),
 };
 
 const samplePayload: NotificationPayload = {

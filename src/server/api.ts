@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { OrchestratorConfig, GraphMemoryPort } from '../core/types.js';
+import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task } from '../core/types.js';
+import { getActiveProject } from '../core/types.js';
+import type { RunSnapshot } from './runner-service.js';
 import type { Logger } from '../infra/logger.js';
 import type { GMServer } from '../infra/gm-discovery.js';
 import { probeServer } from '../infra/gm-discovery.js';
@@ -10,6 +12,7 @@ import { probeServer } from '../infra/gm-discovery.js';
 
 export interface RunnerService {
   isRunning: boolean;
+  getRunSnapshot(): RunSnapshot;
   startSprint(projectId: string, tag?: string): Promise<void>;
   startEpic(projectId: string, epicId: string): Promise<void>;
   stop(): Promise<void>;
@@ -20,7 +23,7 @@ export interface RunnerService {
 export interface ApiDeps {
   config: OrchestratorConfig;
   logger: Logger;
-  gmDiscovery: { discoverServers(): Promise<GMServer[]> };
+  gmDiscovery: { discoverServers(config?: DiscoveryConfig): Promise<GMServer[]> };
   gmClient: GraphMemoryPort & { reconfigure?: (opts: Partial<{ baseUrl: string; projectId: string; apiKey: string }>) => void };
   runner: RunnerService;
   saveConfig: (config: Partial<OrchestratorConfig>) => void;
@@ -34,19 +37,24 @@ export function createApiRouter(deps: ApiDeps): Router {
 
   // GET /api/status
   router.get('/api/status', (_req: Request, res: Response) => {
-    const { apiKey: _redacted, ...redactedConfig } = deps.config;
+    const active = getActiveProject(deps.config);
+    // Redact apiKey from each project entry
+    const redactedProjects = deps.config.projects.map(({ apiKey: _k, ...rest }) => rest);
+    const redactedConfig = { ...deps.config, projects: redactedProjects };
+    const snapshot = deps.runner.isRunning ? deps.runner.getRunSnapshot() : null;
     res.json({
       version: deps.version ?? '2.0.0',
       config: redactedConfig,
       isRunning: deps.runner.isRunning,
-      setupRequired: !deps.config.projectId,
+      setupRequired: !active?.projectId,
+      ...(snapshot ? { run: snapshot } : {}),
     });
   });
 
   // GET /api/projects
   router.get('/api/projects', async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      const servers = await deps.gmDiscovery.discoverServers();
+      const servers = await deps.gmDiscovery.discoverServers(deps.config.discovery);
       res.json({ servers });
     } catch (err) {
       next(err);
@@ -81,7 +89,8 @@ export function createApiRouter(deps: ApiDeps): Router {
   // ── Setup-required guard ────────────────────────────────────────────
   // Routes below this middleware require a configured projectId.
   const requireSetup = (_req: Request, res: Response, next: NextFunction): void => {
-    if (!deps.config.projectId) {
+    const active = getActiveProject(deps.config);
+    if (!active?.projectId) {
       res.status(503).json({ error: 'Setup required: projectId is not configured. Complete the setup wizard first.' });
       return;
     }
@@ -174,8 +183,8 @@ export function createApiRouter(deps: ApiDeps): Router {
 
   // GET /api/config
   router.get('/api/config', (_req: Request, res: Response) => {
-    const { apiKey: _redacted, ...redactedConfig } = deps.config;
-    res.json(redactedConfig);
+    const redactedProjects = deps.config.projects.map(({ apiKey: _k, ...rest }) => rest);
+    res.json({ ...deps.config, projects: redactedProjects });
   });
 
   // PUT /api/config
@@ -191,16 +200,19 @@ export function createApiRouter(deps: ApiDeps): Router {
       deps.saveConfig(deps.config);
 
       // Reconfigure the GM client if connection params changed
-      if (deps.gmClient.reconfigure && (body.baseUrl || body.projectId || body.apiKey)) {
-        deps.gmClient.reconfigure({
-          ...(body.baseUrl !== undefined && { baseUrl: body.baseUrl }),
-          ...(body.projectId !== undefined && { projectId: body.projectId }),
-          ...(body.apiKey !== undefined && { apiKey: body.apiKey }),
-        });
+      const active = getActiveProject(deps.config);
+      if (deps.gmClient.reconfigure && (body.projects || body.activeProjectId)) {
+        if (active) {
+          deps.gmClient.reconfigure({
+            baseUrl: active.baseUrl,
+            projectId: active.projectId,
+            ...(active.apiKey !== undefined && { apiKey: active.apiKey }),
+          });
+        }
       }
 
-      const { apiKey: _redacted, ...redactedConfig } = deps.config;
-      res.json(redactedConfig);
+      const redactedProjects = deps.config.projects.map(({ apiKey: _k, ...rest }) => rest);
+      res.json({ ...deps.config, projects: redactedProjects });
     } catch (err) {
       next(err);
     }

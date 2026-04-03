@@ -9,14 +9,14 @@ import type { OrchestratorConfig } from '../../src/core/types.js';
 
 function makeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
   return {
-    baseUrl: 'http://localhost:3000',
-    projectId: 'test-project',
+    projects: [{ baseUrl: 'http://localhost:3000', projectId: 'test-project', apiKey: 'secret-key' }],
+    activeProjectId: 'test-project',
+    concurrency: 1,
     timeoutMs: 60_000,
     pauseMs: 1_000,
     maxRetries: 1,
     claudeArgs: [],
     dryRun: false,
-    apiKey: 'secret-key',
     ...overrides,
   };
 }
@@ -24,6 +24,7 @@ function makeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
 function makeRunner(overrides: Partial<RunnerService> = {}): RunnerService {
   return {
     isRunning: false,
+    getRunSnapshot: () => ({ activeTask: null, completedTasks: [], recentLines: [] }),
     startSprint: async () => {},
     startEpic: async () => {},
     stop: async () => {},
@@ -92,12 +93,15 @@ describe('API routes', () => {
       expect(body.version).toBe('2.0.0');
       expect(body.isRunning).toBe(false);
       expect(body.config).toBeDefined();
-      expect(body.config.apiKey).toBeUndefined();
+      // apiKey should be redacted from project entries
+      for (const p of body.config.projects) {
+        expect(p.apiKey).toBeUndefined();
+      }
       expect(body.setupRequired).toBe(false);
     });
 
     it('returns setupRequired=true when projectId is empty', async () => {
-      await startApp({ config: makeConfig({ projectId: '' }) });
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
       const res = await fetch(`${baseUrl}/api/status`);
       const body = await res.json();
 
@@ -256,14 +260,15 @@ describe('API routes', () => {
   // ── GET /api/config ─────────────────────────────────────────────────
 
   describe('GET /api/config', () => {
-    it('returns config without apiKey', async () => {
+    it('returns config without apiKey in project entries', async () => {
       await startApp();
       const res = await fetch(`${baseUrl}/api/config`);
       const body = await res.json();
 
       expect(res.status).toBe(200);
-      expect(body.projectId).toBe('test-project');
-      expect(body.apiKey).toBeUndefined();
+      expect(body.activeProjectId).toBe('test-project');
+      expect(body.projects).toHaveLength(1);
+      expect(body.projects[0].apiKey).toBeUndefined();
     });
   });
 
@@ -281,7 +286,6 @@ describe('API routes', () => {
 
       expect(res.status).toBe(200);
       expect(body.pauseMs).toBe(5000);
-      expect(body.apiKey).toBeUndefined();
       expect(testApp.savedConfigs).toHaveLength(1);
     });
   });
@@ -290,7 +294,7 @@ describe('API routes', () => {
 
   describe('setup-required guard', () => {
     it('returns 503 for task routes when projectId is empty', async () => {
-      await startApp({ config: makeConfig({ projectId: '' }) });
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
       const res = await fetch(`${baseUrl}/api/projects/test/tasks`);
       const body = await res.json();
 
@@ -299,7 +303,7 @@ describe('API routes', () => {
     });
 
     it('returns 503 for epic routes when projectId is empty', async () => {
-      await startApp({ config: makeConfig({ projectId: '' }) });
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
       const res = await fetch(`${baseUrl}/api/projects/test/epics`);
       const body = await res.json();
 
@@ -308,7 +312,7 @@ describe('API routes', () => {
     });
 
     it('returns 503 for sprint run when projectId is empty', async () => {
-      await startApp({ config: makeConfig({ projectId: '' }) });
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
       const res = await fetch(`${baseUrl}/api/run/sprint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -321,7 +325,7 @@ describe('API routes', () => {
     });
 
     it('allows status and config routes when projectId is empty', async () => {
-      await startApp({ config: makeConfig({ projectId: '' }) });
+      await startApp({ config: makeConfig({ projects: [], activeProjectId: undefined }) });
 
       const statusRes = await fetch(`${baseUrl}/api/status`);
       expect(statusRes.status).toBe(200);

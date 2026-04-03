@@ -9,7 +9,7 @@ import { useWebSocket } from "../hooks/useWebSocket";
 import { useOrchestrator } from "../hooks/useOrchestrator";
 import Shell from "../components/Shell";
 import LogStream from "../components/LogStream";
-import type { Task, SprintStats, ServerEvent } from "../types";
+import type { Task, SprintStats, ServerEvent, StatusResponse } from "../types";
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -98,14 +98,32 @@ export default function Sprint() {
   const initializedRef = useRef(false);
   const elapsedMs = useElapsedTimer(runActive);
 
-  // Fetch projectId
+  // Fetch status + bootstrap run state for late connections
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/status");
         if (!res.ok) return;
-        const data = await res.json();
-        if (data.config?.projectId) setProjectId(data.config.projectId);
+        const data = (await res.json()) as StatusResponse;
+        if (data.config?.activeProjectId) setProjectId(data.config.activeProjectId);
+
+        // Bootstrap from existing run snapshot
+        if (data.isRunning && data.run) {
+          initializedRef.current = true;
+          setRunActive(true);
+          const tasks = new Map<string, SprintTask>();
+          for (const t of data.run.completedTasks) {
+            tasks.set(t.id, { task: t });
+          }
+          if (data.run.activeTask) {
+            const t = data.run.activeTask;
+            tasks.set(t.id, { task: { ...t, status: "in_progress" }, startedAt: Date.now() });
+            setCurrentTaskId(t.id);
+            setCurrentTaskTitle(t.title);
+          }
+          setSprintTasks(tasks);
+          setLogLines(data.run.recentLines);
+        }
       } catch { /* ignore */ }
     })();
   }, []);

@@ -7,9 +7,11 @@ import type {
   SprintStats,
   Task,
   ServerEvent,
+  ProjectEntry,
 } from '../core/types.js';
+import { getActiveProject } from '../core/types.js';
 import { buildPrompt } from '../core/prompt-builder.js';
-import type { Logger } from '../infra/logger.js';
+import type { Logger, TaskResultMeta } from '../infra/logger.js';
 import type { WebSocketBus } from './ws.js';
 import type { RunnerService } from './api.js';
 import { runSprint, runEpic } from '../core/orchestrator.js';
@@ -17,6 +19,14 @@ import { runSprint, runEpic } from '../core/orchestrator.js';
 // ─── Types ───────────────────────────────────────────────────────────────
 
 export type RunState = 'idle' | 'running' | 'stopping';
+
+const MAX_LOG_BUFFER = 200;
+
+export interface RunSnapshot {
+  activeTask: Task | null;
+  completedTasks: Task[];
+  recentLines: string[];
+}
 
 export interface RunnerServiceDeps {
   config: OrchestratorConfig;
@@ -35,10 +45,28 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   let activeTaskId: string | null = null;
   let runPromise: Promise<SprintStats> | null = null;
 
+  // Run state for late-connecting clients
+  let activeTask: Task | null = null;
+  let completedTasks: Task[] = [];
+  let recentLines: string[] = [];
+
   const { logger, wsBus } = deps;
 
   function emit(event: ServerEvent): void {
     wsBus.broadcast(event);
+  }
+
+  function resetRunState(): void {
+    activeTask = null;
+    completedTasks = [];
+    recentLines = [];
+  }
+
+  function pushLogLine(line: string): void {
+    recentLines.push(line);
+    if (recentLines.length > MAX_LOG_BUFFER) {
+      recentLines = recentLines.slice(-MAX_LOG_BUFFER);
+    }
   }
 
   // Wrap the orchestrator logger to intercept events and forward to WS
@@ -56,7 +84,37 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       task: (task) => {
         logger.task(task);
         activeTaskId = task.id;
+        activeTask = task;
+        recentLines = [];
         emit({ type: 'task:started', payload: { task } });
+      },
+      taskResult: (task: Task, result, meta?: TaskResultMeta) => {
+        logger.taskResult(task, result, meta);
+        // Retrying — task will be picked up again
+        if (meta?.attempt) {
+          emit({ type: 'task:retrying', payload: { task, attempt: meta.attempt } });
+          return;
+        }
+        // Terminal states
+        const finishedTask = { ...task };
+        activeTask = null;
+        switch (result) {
+          case 'done':
+          case 'dry_run':
+            finishedTask.status = 'done';
+            completedTasks.push(finishedTask);
+            emit({ type: 'task:done', payload: { task: finishedTask } });
+            break;
+          case 'cancelled':
+            finishedTask.status = 'cancelled';
+            completedTasks.push(finishedTask);
+            emit({ type: 'task:cancelled', payload: { task: finishedTask } });
+            break;
+          case 'timeout':
+            completedTasks.push(finishedTask);
+            emit({ type: 'task:timeout', payload: { task: finishedTask } });
+            break;
+        }
       },
     };
   }
@@ -66,13 +124,15 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   function createStreamingRunner(): ClaudeRunnerPort {
     return {
       async run(task: Task, config: OrchestratorConfig): Promise<void> {
-        const prompt = buildPrompt(task, { projectId: config.projectId });
+        const active = getActiveProject(config);
+        const prompt = buildPrompt(task, { projectId: active?.projectId ?? '' });
         const args = ['--print', '--dangerously-skip-permissions', ...config.claudeArgs, prompt];
 
         return new Promise((resolve, reject) => {
           const proc = spawn('claude', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: process.env,
+            detached: true,
           });
 
           // Stream stdout line by line
@@ -83,11 +143,13 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
               for (const line of lines) {
+                pushLogLine(line);
                 emit({ type: 'log:line', payload: { taskId: task.id, line } });
               }
             });
             proc.stdout.on('end', () => {
               if (buffer) {
+                pushLogLine(buffer);
                 emit({ type: 'log:line', payload: { taskId: task.id, line: buffer } });
               }
             });
@@ -101,15 +163,24 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
               for (const line of lines) {
+                pushLogLine(`[stderr] ${line}`);
                 emit({ type: 'log:line', payload: { taskId: task.id, line: `[stderr] ${line}` } });
               }
             });
           }
 
-          // Handle abort
+          // Handle abort — kill entire process group
           if (activeAbort) {
             activeAbort.signal.addEventListener('abort', () => {
-              proc.kill('SIGTERM');
+              if (proc.pid) {
+                try {
+                  process.kill(-proc.pid, 'SIGTERM');
+                } catch {
+                  proc.kill('SIGTERM');
+                }
+              } else {
+                proc.kill('SIGTERM');
+              }
             });
           }
 
@@ -135,10 +206,16 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     activeAbort = new AbortController();
     const config: OrchestratorConfig = {
       ...deps.config,
-      projectId,
+      activeProjectId: projectId,
       ...(tag !== undefined ? { tag } : {}),
     };
+    // Ensure the project is in the projects array
+    if (!config.projects.some((p) => p.projectId === projectId)) {
+      const base = getActiveProject(deps.config);
+      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
+    }
 
+    resetRunState();
     emit({ type: 'run:started', payload: { mode: 'sprint' } });
     logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''})`);
 
@@ -149,6 +226,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
         runner,
         poller: deps.poller,
         logger: createWsLogger(),
+        signal: activeAbort.signal,
       },
       config,
     );
@@ -176,8 +254,14 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
     state = 'running';
     activeAbort = new AbortController();
-    const config: OrchestratorConfig = { ...deps.config, projectId };
+    const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
+    // Ensure the project is in the projects array
+    if (!config.projects.some((p) => p.projectId === projectId)) {
+      const base = getActiveProject(deps.config);
+      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
+    }
 
+    resetRunState();
     emit({ type: 'run:started', payload: { mode: 'epic', epicId } });
     logger.section(`Runner: starting epic ${epicId} (project=${projectId})`);
 
@@ -189,6 +273,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
         runner,
         poller: deps.poller,
         logger: createWsLogger(),
+        signal: activeAbort.signal,
       },
       config,
     );
@@ -237,6 +322,13 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   return {
     get isRunning() {
       return state !== 'idle';
+    },
+    getRunSnapshot(): RunSnapshot {
+      return {
+        activeTask,
+        completedTasks: [...completedTasks],
+        recentLines: [...recentLines],
+      };
     },
     startSprint,
     startEpic,

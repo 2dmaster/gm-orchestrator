@@ -7,12 +7,16 @@ export class TaskPoller implements TaskPollerPort {
 
   async waitForCompletion(
     taskId: string,
-    { timeoutMs }: { timeoutMs: number }
+    { timeoutMs, signal }: { timeoutMs: number; signal?: AbortSignal }
   ): Promise<'done' | 'cancelled' | 'timeout'> {
     const deadline = Date.now() + timeoutMs;
     let tick = 0;
 
     while (Date.now() < deadline) {
+      if (signal?.aborted) {
+        clearProgress();
+        return 'cancelled';
+      }
       await sleep(POLL_INTERVAL_MS);
 
       let task;

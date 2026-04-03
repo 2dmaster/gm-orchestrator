@@ -53,17 +53,34 @@ export interface Permissions {
   mcpTools: 'all' | 'none' | string[];
 }
 
-// ─── Orchestrator Config ──────────────────────────────────────────────────
+// ─── Discovery Config ────────────────────────────────────────────────────
 
-export interface OrchestratorConfig {
-  // GraphMemory connection
+export interface DiscoveryConfig {
+  portRange?: [number, number];   // default [3000, 3100]
+  extraServers?: string[];        // explicit URLs, e.g. ["http://localhost:3030"]
+  timeoutMs?: number;             // per-port timeout, default 500
+}
+
+// ─── Project Entry ───────────────────────────────────────────────────────
+
+export interface ProjectEntry {
   baseUrl: string;
   projectId: string;
   apiKey?: string;
+  label?: string; // human-friendly name for UI
+}
+
+// ─── Orchestrator Config ──────────────────────────────────────────────────
+
+export interface OrchestratorConfig {
+  // Multi-project support
+  projects: ProjectEntry[];
+  activeProjectId?: string; // last selected, for quick resume
 
   // Execution
-  timeoutMs: number;   // per-task timeout
-  pauseMs: number;     // delay between tasks
+  concurrency: number;     // max parallel claude sessions (default 1)
+  timeoutMs: number;       // per-task timeout
+  pauseMs: number;         // delay between tasks
   maxRetries: number;
 
   // Claude Code
@@ -72,6 +89,39 @@ export interface OrchestratorConfig {
 
   // Sprint/Epic scope
   tag?: string;
+
+  // Server discovery
+  discovery?: DiscoveryConfig;
+}
+
+/**
+ * Legacy config shape for backward compatibility.
+ * Old config files may have top-level baseUrl/projectId instead of projects[].
+ */
+export interface LegacyOrchestratorConfig {
+  baseUrl?: string;
+  projectId?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+  pauseMs?: number;
+  maxRetries?: number;
+  claudeArgs?: string[];
+  dryRun?: boolean;
+  tag?: string;
+  discovery?: DiscoveryConfig;
+}
+
+/**
+ * Returns the active project entry from the config.
+ * Looks up by activeProjectId first, falls back to first project.
+ */
+export function getActiveProject(config: OrchestratorConfig): ProjectEntry | undefined {
+  if (!config.projects.length) return undefined;
+  if (config.activeProjectId) {
+    const found = config.projects.find((p) => p.projectId === config.activeProjectId);
+    if (found) return found;
+  }
+  return config.projects[0];
 }
 
 // ─── Run Result Types ─────────────────────────────────────────────────────
@@ -139,6 +189,6 @@ export interface ClaudeRunnerPort {
 export interface TaskPollerPort {
   waitForCompletion(
     taskId: string,
-    opts: { timeoutMs: number }
+    opts: { timeoutMs: number; signal?: AbortSignal }
   ): Promise<'done' | 'cancelled' | 'timeout'>;
 }
