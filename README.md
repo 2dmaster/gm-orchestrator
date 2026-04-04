@@ -200,6 +200,68 @@ Resolved in order — later sources override earlier:
 
 ---
 
+## Pipelines (cross-project orchestration)
+
+Pipelines orchestrate epics across multiple projects with dependency ordering. A pipeline is a DAG of stages — each stage runs an epic in a specific project, and declares `after` dependencies on other stages. Independent stages run in parallel.
+
+### Configuration
+
+Add a `pipelines` array to `.gm-orchestrator.json`:
+
+```json
+{
+  "projects": [
+    { "baseUrl": "http://localhost:3000", "projectId": "backend-api" },
+    { "baseUrl": "http://localhost:3000", "projectId": "frontend-app" },
+    { "baseUrl": "http://localhost:3000", "projectId": "e2e-tests" }
+  ],
+  "pipelines": [
+    {
+      "id": "full-stack-release",
+      "name": "Full-stack release",
+      "stages": [
+        { "id": "backend", "projectId": "backend-api", "epicId": "api-v2" },
+        { "id": "frontend", "projectId": "frontend-app", "epicId": "ui-update", "after": ["backend"] },
+        { "id": "e2e", "projectId": "e2e-tests", "epicId": "smoke-tests", "after": ["backend", "frontend"] }
+      ]
+    }
+  ]
+}
+```
+
+In this example:
+- **backend** runs first (no dependencies)
+- **frontend** waits for backend to complete
+- **e2e** waits for both backend and frontend
+
+### API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/pipelines` | GET | List configured pipelines |
+| `/api/pipelines/run` | POST | Start a pipeline run (`{ pipelineId }`) |
+| `/api/pipelines/run/status` | GET | Pipeline run state (stages + statuses) |
+| `/api/pipelines/run/stop` | POST | Stop a pipeline run (`{ pipelineRunId }`) |
+
+### UI
+
+Pipelines appear on the Dashboard above the project cards. Each pipeline card shows:
+- Stage count and dependency visualization
+- **Run** button to start the pipeline
+- Live stage status (queued / running / done / failed) when a run is active
+
+On the Runs page, pipeline runs appear as grouped entries with a progress bar showing stages done / total.
+
+### Validation
+
+Pipeline configs are validated on load:
+- Stage IDs must be unique within a pipeline
+- `after` references must point to existing stage IDs
+- No cycles allowed (DAG validation via topological sort)
+- Each stage must have `projectId` and `epicId`
+
+---
+
 ## CLI (advanced)
 
 The browser UI is the primary interface. CLI commands are available for scripting and CI.

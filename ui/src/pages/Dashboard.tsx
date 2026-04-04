@@ -18,6 +18,7 @@ import { useProjectsOverview } from "../hooks/useProjectsOverview";
 import Shell from "../components/Shell";
 import TaskRow from "../components/TaskRow";
 import EpicCard from "../components/EpicCard";
+import PipelineSection from "../components/PipelineSection";
 import type { Epic, Task, ProjectOverview } from "../types";
 
 const PRIORITY_ORDER: Record<string, number> = {
@@ -702,6 +703,14 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="space-y-4">
+                {/* Pipelines */}
+                <PipelineSection
+                  pipelines={orchestrator.pipelines}
+                  pipelineRuns={orchestrator.pipelineRuns}
+                  onStart={orchestrator.startPipeline}
+                  onStop={orchestrator.stopPipeline}
+                />
+
                 {/* Project cards grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                   {projectOverviews.map((project) => (

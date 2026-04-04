@@ -294,6 +294,259 @@ describe('Scheduler', () => {
     expect(stats.done).toBe(2); // one task from each project
   });
 
+  it('blocks pipeline stages until dependencies complete', async () => {
+    // Stage A has no deps, stage B depends on A
+    const taskA = makeTask({ id: 'pipe-a', title: 'A', status: 'todo' });
+    const taskB = makeTask({ id: 'pipe-b', title: 'B', status: 'todo' });
+    gmA.addTask(taskA);
+    gmB.addTask(taskB);
+    pollerA.setResult('pipe-a', 'done');
+    pollerB.setResult('pipe-b', 'done');
+
+    const epicA = {
+      id: 'epic-a', title: 'EA', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'pipe-a', title: 'A', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    const epicB = {
+      id: 'epic-b', title: 'EB', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'pipe-b', title: 'B', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    gmA.addEpic(epicA);
+    gmB.addEpic(epicB);
+
+    const startOrder: string[] = [];
+    const onSlotStarted = vi.fn((_slotId, request) => {
+      startOrder.push(request.stageId);
+    });
+    const onQueueDrained = vi.fn();
+
+    const scheduler = createScheduler(
+      makeConfig({ concurrency: 2 }),
+      makePorts(),
+      { onSlotStarted, onQueueDrained },
+    );
+
+    const pipelineRunId = 'run-1';
+
+    // Enqueue B first (has dep on A), then A (no deps)
+    scheduler.enqueue({
+      projectId: 'project-b', mode: 'epic', epicId: 'epic-b', priority: 0,
+      pipelineRunId, stageId: 'stage-b', afterStages: ['stage-a'],
+    });
+    scheduler.enqueue({
+      projectId: 'project-a', mode: 'epic', epicId: 'epic-a', priority: 1,
+      pipelineRunId, stageId: 'stage-a', afterStages: [],
+    });
+
+    scheduler.start();
+
+    await vi.waitFor(() => {
+      expect(onQueueDrained).toHaveBeenCalled();
+    }, { timeout: 5000 });
+
+    // A should have started first despite B having higher priority, because B was blocked
+    expect(startOrder[0]).toBe('stage-a');
+    expect(startOrder[1]).toBe('stage-b');
+  });
+
+  it('runs independent pipeline stages in parallel', async () => {
+    const taskA = makeTask({ id: 'par-a', title: 'A', status: 'todo' });
+    const taskB = makeTask({ id: 'par-b', title: 'B', status: 'todo' });
+    gmA.addTask(taskA);
+    gmB.addTask(taskB);
+    pollerA.setResult('par-a', 'done');
+    pollerB.setResult('par-b', 'done');
+
+    const epicA = {
+      id: 'epic-pa', title: 'EA', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'par-a', title: 'A', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    const epicB = {
+      id: 'epic-pb', title: 'EB', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'par-b', title: 'B', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    gmA.addEpic(epicA);
+    gmB.addEpic(epicB);
+
+    const onSlotStarted = vi.fn();
+    const onQueueDrained = vi.fn();
+
+    const scheduler = createScheduler(
+      makeConfig({ concurrency: 2 }),
+      makePorts(),
+      { onSlotStarted, onQueueDrained },
+    );
+
+    const pipelineRunId = 'run-parallel';
+
+    // Both stages have no deps — should run in parallel
+    scheduler.enqueue({
+      projectId: 'project-a', mode: 'epic', epicId: 'epic-pa', priority: 1,
+      pipelineRunId, stageId: 'stage-a', afterStages: [],
+    });
+    scheduler.enqueue({
+      projectId: 'project-b', mode: 'epic', epicId: 'epic-pb', priority: 1,
+      pipelineRunId, stageId: 'stage-b', afterStages: [],
+    });
+
+    scheduler.start();
+
+    await vi.waitFor(() => {
+      expect(onQueueDrained).toHaveBeenCalled();
+    }, { timeout: 5000 });
+
+    // Both should have started (both slots filled)
+    expect(onSlotStarted).toHaveBeenCalledTimes(2);
+  });
+
+  it('tracks completed stages per pipeline run', async () => {
+    const taskA = makeTask({ id: 'track-a', title: 'A', status: 'todo' });
+    gmA.addTask(taskA);
+    pollerA.setResult('track-a', 'done');
+
+    const epicA = {
+      id: 'epic-ta', title: 'EA', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'track-a', title: 'A', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    gmA.addEpic(epicA);
+
+    const onQueueDrained = vi.fn();
+
+    const scheduler = createScheduler(
+      makeConfig({ concurrency: 1 }),
+      makePorts(),
+      { onQueueDrained },
+    );
+
+    scheduler.enqueue({
+      projectId: 'project-a', mode: 'epic', epicId: 'epic-ta', priority: 1,
+      pipelineRunId: 'run-track', stageId: 'stage-a',
+    });
+
+    scheduler.start();
+
+    await vi.waitFor(() => {
+      expect(onQueueDrained).toHaveBeenCalled();
+    }, { timeout: 5000 });
+
+    const done = scheduler.completedStages.get('run-track');
+    expect(done).toBeDefined();
+    expect(done!.has('stage-a')).toBe(true);
+  });
+
+  it('full 3-stage pipeline: A -> B, A -> C (B and C run in parallel after A)', async () => {
+    // Set up 3 projects with tasks
+    const gmC = new FakeGraphMemory();
+    const pollerC = new FakePoller(gmC);
+
+    const taskA = makeTask({ id: 'full-a', title: 'A', status: 'todo' });
+    const taskB = makeTask({ id: 'full-b', title: 'B', status: 'todo' });
+    const taskC = makeTask({ id: 'full-c', title: 'C', status: 'todo' });
+    gmA.addTask(taskA);
+    gmB.addTask(taskB);
+    gmC.addTask(taskC);
+    pollerA.setResult('full-a', 'done');
+    pollerB.setResult('full-b', 'done');
+    pollerC.setResult('full-c', 'done');
+
+    const epicA = {
+      id: 'epic-fa', title: 'EA', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'full-a', title: 'A', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    const epicB = {
+      id: 'epic-fb', title: 'EB', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'full-b', title: 'B', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    const epicC = {
+      id: 'epic-fc', title: 'EC', status: 'todo' as const, priority: 'medium' as const,
+      tasks: [{ id: 'full-c', title: 'C', status: 'todo' as const }],
+      createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z',
+    };
+    gmA.addEpic(epicA);
+    gmB.addEpic(epicB);
+    gmC.addEpic(epicC);
+
+    const startOrder: string[] = [];
+    const completeOrder: string[] = [];
+    const onSlotStarted = vi.fn((_slotId, request) => {
+      startOrder.push(request.stageId);
+    });
+    const onSlotCompleted = vi.fn((_slotId, request) => {
+      completeOrder.push(request.stageId);
+    });
+    const onQueueDrained = vi.fn();
+
+    const config = makeConfig({
+      concurrency: 3,
+      projects: [
+        { baseUrl: 'http://localhost:3000', projectId: 'project-a' },
+        { baseUrl: 'http://localhost:3000', projectId: 'project-b' },
+        { baseUrl: 'http://localhost:3000', projectId: 'project-c' },
+      ],
+    });
+
+    const scheduler = createScheduler(config, {
+      resolveGm: (pid) => {
+        if (pid === 'project-a') return gmA;
+        if (pid === 'project-b') return gmB;
+        return gmC;
+      },
+      createRunner: () => new FakeRunner(),
+      createPoller: (pid) => {
+        if (pid === 'project-a') return pollerA;
+        if (pid === 'project-b') return pollerB;
+        return pollerC;
+      },
+      logger: silentLogger,
+    }, { onSlotStarted, onSlotCompleted, onQueueDrained });
+
+    const pipelineRunId = 'full-pipeline-run';
+
+    // Enqueue: A (no deps), B (after A), C (after A)
+    scheduler.enqueue({
+      projectId: 'project-a', mode: 'epic', epicId: 'epic-fa', priority: 1,
+      pipelineRunId, stageId: 'stage-a', afterStages: [],
+    });
+    scheduler.enqueue({
+      projectId: 'project-b', mode: 'epic', epicId: 'epic-fb', priority: 1,
+      pipelineRunId, stageId: 'stage-b', afterStages: ['stage-a'],
+    });
+    scheduler.enqueue({
+      projectId: 'project-c', mode: 'epic', epicId: 'epic-fc', priority: 1,
+      pipelineRunId, stageId: 'stage-c', afterStages: ['stage-a'],
+    });
+
+    scheduler.start();
+
+    await vi.waitFor(() => {
+      expect(onQueueDrained).toHaveBeenCalled();
+    }, { timeout: 5000 });
+
+    // All 3 stages should have run
+    expect(onSlotStarted).toHaveBeenCalledTimes(3);
+    expect(onSlotCompleted).toHaveBeenCalledTimes(3);
+
+    // A must start first (B and C depend on it)
+    expect(startOrder[0]).toBe('stage-a');
+
+    // B and C should both start after A completes (order between B/C is non-deterministic)
+    expect(startOrder.slice(1).sort()).toEqual(['stage-b', 'stage-c']);
+
+    // All stages should be tracked as completed
+    const done = scheduler.completedStages.get(pipelineRunId);
+    expect(done).toBeDefined();
+    expect(done!.has('stage-a')).toBe(true);
+    expect(done!.has('stage-b')).toBe(true);
+    expect(done!.has('stage-c')).toBe(true);
+  });
+
   it('handles epic mode requests', async () => {
     const epic = {
       id: 'epic-1',

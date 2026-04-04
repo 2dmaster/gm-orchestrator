@@ -25,6 +25,12 @@ export interface RunRequest {
   tag?: string | undefined;
   priority: number;        // lower = higher priority (0 = critical)
   enqueuedAt: number;
+  /** Pipeline run ID — groups related stage requests. */
+  pipelineRunId?: string | undefined;
+  /** Stage ID within the pipeline — used for dependency resolution. */
+  stageId?: string | undefined;
+  /** Stage IDs that must complete before this request can be picked. */
+  afterStages?: string[] | undefined;
 }
 
 export type SlotStatus = 'idle' | 'running' | 'stopping';
@@ -94,6 +100,9 @@ export interface Scheduler {
 
   /** Get aggregate stats across all completed runs. */
   readonly aggregateStats: SprintStats;
+
+  /** Get completed stages per pipeline run (for dependency tracking). */
+  readonly completedStages: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 // ─── Implementation ─────────────────────────────────────────────────────
@@ -147,6 +156,9 @@ export function createScheduler(
   // Track which projects have active slots for round-robin fairness
   let lastProjectIndex = -1;
 
+  // Track completed stages per pipeline run for dependency resolution
+  const completedStages = new Map<string, Set<string>>(); // pipelineRunId → Set<stageId>
+
   function enqueue(request: Omit<RunRequest, 'id' | 'enqueuedAt'>): string {
     const id = generateRequestId();
     const full: RunRequest = {
@@ -155,6 +167,11 @@ export function createScheduler(
       enqueuedAt: Date.now(),
     };
     requestQueue.push(full);
+
+    // Ensure pipeline run has a tracking set
+    if (full.pipelineRunId && !completedStages.has(full.pipelineRunId)) {
+      completedStages.set(full.pipelineRunId, new Set());
+    }
 
     // Sort queue by priority (lower number = higher priority)
     requestQueue.sort((a, b) => a.priority - b.priority || a.enqueuedAt - b.enqueuedAt);
@@ -169,12 +186,25 @@ export function createScheduler(
     return id;
   }
 
+  /**
+   * Check if a pipeline stage request has all its dependencies satisfied.
+   * Non-pipeline requests are always ready.
+   */
+  function isStageReady(request: RunRequest): boolean {
+    if (!request.pipelineRunId || !request.afterStages?.length) return true;
+    const done = completedStages.get(request.pipelineRunId);
+    if (!done) return false;
+    return request.afterStages.every((dep) => done.has(dep));
+  }
+
   function pickNextRequest(): RunRequest | undefined {
     if (!requestQueue.length) return undefined;
 
     if (strategy === 'priority') {
-      // Strict priority: just take the first (already sorted by priority)
-      return requestQueue.shift();
+      // Strict priority: take the first ready request (already sorted by priority)
+      const idx = requestQueue.findIndex(isStageReady);
+      if (idx === -1) return undefined;
+      return requestQueue.splice(idx, 1)[0];
     }
 
     // Round-robin: cycle through projects fairly
@@ -182,14 +212,18 @@ export function createScheduler(
       slots.filter((s) => s.status === 'running' && s.projectId).map((s) => s.projectId)
     );
 
-    // Try to find a request from a project that doesn't have an active slot
-    const nonActiveIdx = requestQueue.findIndex((r) => !activeProjectIds.has(r.projectId));
+    // Try to find a ready request from a project that doesn't have an active slot
+    const nonActiveIdx = requestQueue.findIndex(
+      (r) => !activeProjectIds.has(r.projectId) && isStageReady(r)
+    );
     if (nonActiveIdx !== -1) {
       return requestQueue.splice(nonActiveIdx, 1)[0];
     }
 
-    // All queued projects already have active slots — just take the highest priority
-    return requestQueue.shift();
+    // All queued projects already have active slots — take the highest priority ready request
+    const readyIdx = requestQueue.findIndex(isStageReady);
+    if (readyIdx === -1) return undefined;
+    return requestQueue.splice(readyIdx, 1)[0];
   }
 
   function findIdleSlot(): RunSlot | undefined {
@@ -262,6 +296,17 @@ export function createScheduler(
     promise
       .then((stats) => {
         totalStats = mergeStats(totalStats, stats);
+
+        // Track completed pipeline stage
+        if (request.pipelineRunId && request.stageId) {
+          let done = completedStages.get(request.pipelineRunId);
+          if (!done) {
+            done = new Set();
+            completedStages.set(request.pipelineRunId, done);
+          }
+          done.add(request.stageId);
+        }
+
         events.onSlotCompleted?.(slot.id, request, stats);
       })
       .catch((err: unknown) => {
@@ -385,6 +430,9 @@ export function createScheduler(
     },
     get aggregateStats(): SprintStats {
       return { ...totalStats };
+    },
+    get completedStages(): ReadonlyMap<string, ReadonlySet<string>> {
+      return completedStages;
     },
   };
 }

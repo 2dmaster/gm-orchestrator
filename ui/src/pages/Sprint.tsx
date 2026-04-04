@@ -16,7 +16,8 @@ import {
   TooltipContent,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import type { Task, SprintStats, ServerEvent } from "../types";
+import type { Task, SprintStats, ServerEvent, PipelineRun, PipelineStageStatus } from "../types";
+import { Badge } from "@/components/ui/badge";
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -437,6 +438,208 @@ function RunDetail({ run }: { run: RunEntry }) {
   );
 }
 
+// ─── Pipeline Run sidebar card ──────────────────────────────────────────
+
+const PIPE_STAGE_COLORS: Record<PipelineStageStatus, string> = {
+  queued: "bg-muted",
+  running: "bg-primary",
+  done: "bg-[var(--color-done)]",
+  failed: "bg-[var(--color-cancelled)]",
+  cancelled: "bg-muted-foreground/40",
+};
+
+function PipelineRunCard({
+  run,
+  isSelected,
+  onSelect,
+  onStop,
+}: {
+  run: PipelineRun;
+  isSelected: boolean;
+  onSelect: () => void;
+  onStop: () => void;
+}) {
+  const doneCount = run.stages.filter((s) => s.status === "done").length;
+  const failedCount = run.stages.filter((s) => s.status === "failed").length;
+  const totalCount = run.stages.length;
+  const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  const [elapsed, setElapsed] = useState("");
+
+  useEffect(() => {
+    if (run.completedAt) {
+      setElapsed(formatElapsed(run.completedAt - run.startedAt));
+      return;
+    }
+    if (run.status !== "running") return;
+    const update = () => setElapsed(formatElapsed(Date.now() - run.startedAt));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [run.startedAt, run.completedAt, run.status]);
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full text-left rounded-lg border p-3 space-y-2 transition-all ${
+        isSelected
+          ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+          : "border-border hover:border-primary/30"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          {run.status === "running" && (
+            <div className="w-2.5 h-2.5 rounded-full bg-primary shrink-0 animate-pulse" />
+          )}
+          {run.status === "done" && (
+            <Check className="w-3.5 h-3.5 text-[var(--color-done)] shrink-0" />
+          )}
+          {run.status === "failed" && (
+            <X className="w-3.5 h-3.5 text-[var(--color-cancelled)] shrink-0" />
+          )}
+          {run.status === "cancelled" && (
+            <Square className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          )}
+          <span className="text-sm font-medium truncate">{run.pipelineId}</span>
+          <Badge variant="outline" className="text-[10px] shrink-0">pipeline</Badge>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {elapsed && (
+            <span className="text-[10px] text-muted-foreground font-mono">{elapsed}</span>
+          )}
+          {run.status === "running" && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onStop(); }}
+              className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
+            >
+              <StopCircle className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Stage progress */}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <Progress value={pct} className="flex-1 h-1" />
+          <span className="text-[10px] text-muted-foreground font-mono shrink-0">
+            {doneCount}/{totalCount}
+          </span>
+        </div>
+        {/* Stage status dots */}
+        <div className="flex gap-1">
+          {run.stages.map((stage) => (
+            <TooltipProvider key={stage.stageId}>
+              <Tooltip>
+                <TooltipTrigger>
+                  <div
+                    className={`w-2 h-2 rounded-full ${PIPE_STAGE_COLORS[stage.status]} ${
+                      stage.status === "running" ? "animate-pulse" : ""
+                    }`}
+                  />
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  {stage.stageId}: {stage.status}
+                  {stage.error && <span className="text-red-400 ml-1">({stage.error})</span>}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ))}
+        </div>
+      </div>
+
+      {failedCount > 0 && (
+        <p className="text-[10px] text-[var(--color-cancelled)]">
+          {failedCount} stage{failedCount !== 1 ? "s" : ""} failed
+        </p>
+      )}
+    </button>
+  );
+}
+
+// ─── Pipeline Run detail panel ──────────────────────────────────────────
+
+function PipelineRunDetail({ run }: { run: PipelineRun }) {
+  const doneCount = run.stages.filter((s) => s.status === "done").length;
+  const totalCount = run.stages.length;
+  const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (run.status !== "running") {
+      setElapsed(run.completedAt ? run.completedAt - run.startedAt : 0);
+      return;
+    }
+    const update = () => setElapsed(Date.now() - run.startedAt);
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [run.startedAt, run.completedAt, run.status]);
+
+  const statusLabel = run.status === "running" ? "Running" : run.status === "done" ? "Complete" : run.status === "failed" ? "Failed" : "Cancelled";
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-6 py-4 border-b border-border space-y-3 shrink-0">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold">{run.pipelineId}</h1>
+            <p className="text-xs text-muted-foreground">
+              {statusLabel} &middot; {formatElapsed(elapsed)} elapsed
+            </p>
+          </div>
+          <Badge variant="outline">pipeline</Badge>
+        </div>
+        <div className="flex items-center gap-3">
+          <Progress value={progressPct} className="flex-1 h-2" />
+          <span className="text-xs text-muted-foreground font-mono shrink-0">
+            {doneCount} / {totalCount} stages
+          </span>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="space-y-2">
+          {run.stages.map((stage) => {
+            const duration = stage.startedAt && stage.completedAt
+              ? formatElapsed(stage.completedAt - stage.startedAt)
+              : stage.startedAt
+              ? formatElapsed(Date.now() - stage.startedAt)
+              : null;
+
+            return (
+              <Card key={stage.stageId}>
+                <CardContent className="py-3 px-4">
+                  <div className="flex items-center gap-3">
+                    {stage.status === "done" && <Check className="w-4 h-4 text-[var(--color-done)] shrink-0" />}
+                    {stage.status === "running" && <div className="w-4 h-4 rounded-full bg-primary shrink-0 animate-pulse-dot" />}
+                    {stage.status === "queued" && <Circle className="w-4 h-4 text-muted-foreground shrink-0" />}
+                    {stage.status === "failed" && <X className="w-4 h-4 text-[var(--color-cancelled)] shrink-0" />}
+                    {stage.status === "cancelled" && <Square className="w-4 h-4 text-muted-foreground shrink-0" />}
+
+                    <span className="text-sm font-medium flex-1">{stage.stageId}</span>
+
+                    {duration && (
+                      <span className="text-xs text-muted-foreground font-mono">{duration}</span>
+                    )}
+
+                    <Badge variant="outline" className="text-[10px]">{stage.status}</Badge>
+                  </div>
+                  {stage.error && (
+                    <p className="text-xs text-red-400 mt-1 ml-7">{stage.error}</p>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Sprint/Runs page ──────────────────────────────────────────────
 
 export default function Sprint() {
@@ -444,6 +647,7 @@ export default function Sprint() {
   const orchestrator = useOrchestrator(ws);
   const [runs, setRuns] = useState<Map<string, RunEntry>>(new Map());
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedPipelineRunId, setSelectedPipelineRunId] = useState<string | null>(null);
 
   // Helper to update a run entry immutably
   const updateRun = useCallback((projectId: string, updater: (run: RunEntry) => RunEntry) => {
@@ -724,7 +928,10 @@ export default function Sprint() {
     return list;
   }, [runs]);
 
-  const selectedRun = selectedProjectId ? runs.get(selectedProjectId) ?? null : null;
+  const selectedRun = selectedProjectId && !selectedPipelineRunId ? runs.get(selectedProjectId) ?? null : null;
+  const selectedPipelineRun = selectedPipelineRunId
+    ? orchestrator.pipelineRuns.find((r) => r.id === selectedPipelineRunId) ?? null
+    : null;
   const totalTaskCount = useMemo(
     () => runList.reduce((sum, r) => sum + r.tasks.size, 0),
     [runList],
@@ -739,7 +946,7 @@ export default function Sprint() {
   }, [orchestrator]);
 
   // Empty state — no runs at all
-  if (runList.length === 0) {
+  if (runList.length === 0 && orchestrator.pipelineRuns.length === 0) {
     return (
       <Shell projectId={null} taskCount={0}>
         <div className="flex-1 flex flex-col items-center justify-center gap-6">
@@ -765,6 +972,32 @@ export default function Sprint() {
       <div className="flex h-full">
         {/* Left sidebar — run list */}
         <div className="w-[240px] shrink-0 border-r border-border p-3 space-y-2 overflow-y-auto">
+          {/* Pipeline runs */}
+          {orchestrator.pipelineRuns.length > 0 && (
+            <>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium px-1 mb-2">
+                Pipelines ({orchestrator.pipelineRuns.length})
+              </p>
+              {orchestrator.pipelineRuns.map((pRun) => (
+                <PipelineRunCard
+                  key={pRun.id}
+                  run={pRun}
+                  isSelected={selectedPipelineRunId === pRun.id}
+                  onSelect={() => {
+                    setSelectedPipelineRunId(pRun.id);
+                    setSelectedProjectId(null);
+                  }}
+                  onStop={() => {
+                    orchestrator.stopPipeline(pRun.id).catch((err) => {
+                      toast.error((err as Error).message);
+                    });
+                  }}
+                />
+              ))}
+            </>
+          )}
+
+          {/* Project runs */}
           <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium px-1 mb-2">
             Runs ({runList.length})
           </p>
@@ -772,8 +1005,11 @@ export default function Sprint() {
             <RunCard
               key={run.projectId}
               run={run}
-              isSelected={selectedProjectId === run.projectId}
-              onSelect={() => setSelectedProjectId(run.projectId)}
+              isSelected={selectedProjectId === run.projectId && !selectedPipelineRunId}
+              onSelect={() => {
+                setSelectedProjectId(run.projectId);
+                setSelectedPipelineRunId(null);
+              }}
               onStop={() => handleStopProject(run.projectId)}
             />
           ))}
@@ -781,7 +1017,9 @@ export default function Sprint() {
 
         {/* Right panel — run detail */}
         <div className="flex-1 flex flex-col min-w-0">
-          {selectedRun ? (
+          {selectedPipelineRun ? (
+            <PipelineRunDetail run={selectedPipelineRun} />
+          ) : selectedRun ? (
             <RunDetail run={selectedRun} />
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">

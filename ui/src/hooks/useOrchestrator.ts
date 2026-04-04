@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { StatusResponse } from '../types';
+import type { StatusResponse, Pipeline, PipelineRun } from '../types';
 import type { UseWebSocketReturn } from './useWebSocket';
 
 export interface UseOrchestratorReturn {
@@ -12,6 +12,12 @@ export interface UseOrchestratorReturn {
   isProjectRunning: (projectId: string) => boolean;
   runningProjectIds: string[];
   status: StatusResponse | null;
+  // Pipeline
+  pipelines: Pipeline[];
+  pipelineRuns: PipelineRun[];
+  startPipeline: (pipelineId: string) => Promise<void>;
+  stopPipeline: (pipelineRunId: string) => Promise<void>;
+  fetchPipelines: () => Promise<void>;
 }
 
 async function post(url: string, body?: Record<string, unknown>): Promise<void> {
@@ -29,6 +35,8 @@ async function post(url: string, body?: Record<string, unknown>): Promise<void> 
 export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
+  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+  const [pipelineRuns, setPipelineRuns] = useState<PipelineRun[]>([]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -42,10 +50,34 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     }
   }, []);
 
+  const fetchPipelines = useCallback(async () => {
+    try {
+      const res = await fetch('/api/pipelines');
+      if (!res.ok) return;
+      const data = await res.json() as { pipelines: Pipeline[] };
+      setPipelines(data.pipelines);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
+  const fetchPipelineRuns = useCallback(async () => {
+    try {
+      const res = await fetch('/api/pipelines/run/status');
+      if (!res.ok) return;
+      const data = await res.json() as { runs: PipelineRun[] };
+      setPipelineRuns(data.runs);
+    } catch {
+      // non-critical
+    }
+  }, []);
+
   // Initial status fetch
   useEffect(() => {
     fetchStatus();
-  }, [fetchStatus]);
+    fetchPipelines();
+    fetchPipelineRuns();
+  }, [fetchStatus, fetchPipelines, fetchPipelineRuns]);
 
   // Update running state based on WebSocket events
   useEffect(() => {
@@ -89,8 +121,14 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
         setRunningIds(new Set());
         fetchStatus();
         break;
+      case 'pipeline:started':
+      case 'pipeline:stage_started':
+      case 'pipeline:stage_completed':
+      case 'pipeline:complete':
+        fetchPipelineRuns();
+        break;
     }
-  }, [ws.lastEvent, fetchStatus]);
+  }, [ws.lastEvent, fetchStatus, fetchPipelineRuns]);
 
   const startSprint = useCallback(async (projectId: string, tag?: string) => {
     await post('/api/run/sprint', { projectId, tag });
@@ -115,6 +153,16 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     await post('/api/run/stop', { projectId });
   }, []);
 
+  const startPipeline = useCallback(async (pipelineId: string) => {
+    await post('/api/pipelines/run', { pipelineId });
+    fetchPipelineRuns();
+  }, [fetchPipelineRuns]);
+
+  const stopPipeline = useCallback(async (pipelineRunId: string) => {
+    await post('/api/pipelines/run/stop', { pipelineRunId });
+    fetchPipelineRuns();
+  }, [fetchPipelineRuns]);
+
   const isProjectRunning = useCallback(
     (projectId: string) => runningIds.has(projectId),
     [runningIds],
@@ -130,5 +178,10 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     isProjectRunning,
     runningProjectIds: [...runningIds],
     status,
+    pipelines,
+    pipelineRuns,
+    startPipeline,
+    stopPipeline,
+    fetchPipelines,
   };
 }

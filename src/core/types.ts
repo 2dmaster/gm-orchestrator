@@ -125,6 +125,9 @@ export interface OrchestratorConfig {
 
   // Persisted last run — allows restart/continue after process restart
   lastRun?: LastRunState | undefined;
+
+  // Pipeline definitions for cross-project orchestration
+  pipelines?: Pipeline[];
 }
 
 /** Persisted in config so restart survives process restarts. */
@@ -165,6 +168,41 @@ export function getActiveProject(config: OrchestratorConfig): ProjectEntry | und
     if (found) return found;
   }
   return config.projects[0];
+}
+
+// ─── Pipeline Types ──────────────────────────────────────────────────────
+
+export interface PipelineStage {
+  id: string;
+  projectId: string;
+  epicId: string;
+  /** Stage IDs that must complete before this stage can start. */
+  after?: string[];
+}
+
+export interface Pipeline {
+  id: string;
+  name: string;
+  stages: PipelineStage[];
+}
+
+export type PipelineStageStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface PipelineStageRun {
+  stageId: string;
+  status: PipelineStageStatus;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export interface PipelineRun {
+  id: string;
+  pipelineId: string;
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  stages: PipelineStageRun[];
+  startedAt: number;
+  completedAt?: number;
 }
 
 // ─── Run Result Types ─────────────────────────────────────────────────────
@@ -208,6 +246,10 @@ export type ServerEvent =
   | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: 'sprint' | 'epic' | 'tasks' } }
   | { type: 'scheduler:slot_completed'; payload: { slotId: number; projectId: string; stats: SprintStats } }
   | { type: 'scheduler:drained' }
+  | { type: 'pipeline:started';         payload: { pipelineRunId: string; pipelineId: string } }
+  | { type: 'pipeline:stage_started';   payload: { pipelineRunId: string; stageId: string } }
+  | { type: 'pipeline:stage_completed'; payload: { pipelineRunId: string; stageId: string; status: PipelineStageStatus } }
+  | { type: 'pipeline:complete';        payload: { pipelineRunId: string; status: 'done' | 'failed' | 'cancelled' } }
   | { type: 'run:paused' }
   | { type: 'run:resumed' }
   | { type: 'error';         payload: { message: string; projectId?: string } };

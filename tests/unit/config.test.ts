@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadConfig, saveConfig, migrateConfig } from '../../src/infra/config.js';
+import { loadConfig, saveConfig, migrateConfig, validatePipelines } from '../../src/infra/config.js';
+import type { Pipeline } from '../../src/core/types.js';
 
 describe('config loading', () => {
   const originalCwd = process.cwd();
@@ -168,5 +169,108 @@ describe('migrateConfig', () => {
     expect(result.projects).toHaveLength(1);
     expect(result.projects![0]!.projectId).toBe('');
     expect(result.activeProjectId).toBeUndefined();
+  });
+});
+
+describe('validatePipelines', () => {
+  const validPipeline: Pipeline = {
+    id: 'release',
+    name: 'Full-stack release',
+    stages: [
+      { id: 'backend', projectId: 'backend-api', epicId: 'api-v2' },
+      { id: 'frontend', projectId: 'frontend-app', epicId: 'ui-update', after: ['backend'] },
+      { id: 'e2e', projectId: 'e2e-tests', epicId: 'smoke-tests', after: ['backend', 'frontend'] },
+    ],
+  };
+
+  it('accepts a valid pipeline with no errors', () => {
+    expect(validatePipelines([validPipeline])).toEqual([]);
+  });
+
+  it('accepts a pipeline with no dependencies (all stages independent)', () => {
+    const pipeline: Pipeline = {
+      id: 'parallel',
+      name: 'Parallel jobs',
+      stages: [
+        { id: 'a', projectId: 'p1', epicId: 'e1' },
+        { id: 'b', projectId: 'p2', epicId: 'e2' },
+      ],
+    };
+    expect(validatePipelines([pipeline])).toEqual([]);
+  });
+
+  it('rejects duplicate pipeline IDs', () => {
+    const errors = validatePipelines([validPipeline, { ...validPipeline }]);
+    expect(errors).toContainEqual(expect.stringContaining('Duplicate pipeline ID'));
+  });
+
+  it('rejects duplicate stage IDs within a pipeline', () => {
+    const pipeline: Pipeline = {
+      id: 'dup-stage',
+      name: 'Bad',
+      stages: [
+        { id: 'a', projectId: 'p1', epicId: 'e1' },
+        { id: 'a', projectId: 'p2', epicId: 'e2' },
+      ],
+    };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('duplicate stage ID "a"'));
+  });
+
+  it('rejects stages with unknown "after" references', () => {
+    const pipeline: Pipeline = {
+      id: 'bad-ref',
+      name: 'Bad',
+      stages: [
+        { id: 'a', projectId: 'p1', epicId: 'e1', after: ['nonexistent'] },
+      ],
+    };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('unknown stage "nonexistent"'));
+  });
+
+  it('rejects self-referencing stages', () => {
+    const pipeline: Pipeline = {
+      id: 'self-ref',
+      name: 'Bad',
+      stages: [
+        { id: 'a', projectId: 'p1', epicId: 'e1', after: ['a'] },
+      ],
+    };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('cannot depend on itself'));
+  });
+
+  it('detects cycles in stage dependencies', () => {
+    const pipeline: Pipeline = {
+      id: 'cyclic',
+      name: 'Cyclic',
+      stages: [
+        { id: 'a', projectId: 'p1', epicId: 'e1', after: ['c'] },
+        { id: 'b', projectId: 'p2', epicId: 'e2', after: ['a'] },
+        { id: 'c', projectId: 'p3', epicId: 'e3', after: ['b'] },
+      ],
+    };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('cycle detected'));
+  });
+
+  it('rejects pipelines with no stages', () => {
+    const pipeline: Pipeline = { id: 'empty', name: 'Empty', stages: [] };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('at least one stage'));
+  });
+
+  it('rejects stages missing projectId or epicId', () => {
+    const pipeline: Pipeline = {
+      id: 'missing-fields',
+      name: 'Bad',
+      stages: [
+        { id: 'a', projectId: '', epicId: '' },
+      ],
+    };
+    const errors = validatePipelines([pipeline]);
+    expect(errors).toContainEqual(expect.stringContaining('missing "projectId"'));
+    expect(errors).toContainEqual(expect.stringContaining('missing "epicId"'));
   });
 });

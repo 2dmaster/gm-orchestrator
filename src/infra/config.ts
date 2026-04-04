@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, join } from 'path';
 import { homedir } from 'os';
-import type { OrchestratorConfig, LegacyOrchestratorConfig, ProjectEntry } from '../core/types.js';
+import type { OrchestratorConfig, LegacyOrchestratorConfig, ProjectEntry, Pipeline } from '../core/types.js';
 
 const CONFIG_FILE = '.gm-orchestrator.json';
 
@@ -108,6 +108,7 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.maxTurns !== undefined) result.maxTurns = cfg.maxTurns;
     if (cfg.agentTimeoutMs !== undefined) result.agentTimeoutMs = cfg.agentTimeoutMs;
     if (cfg.lastRun !== undefined) result.lastRun = cfg.lastRun;
+    if (cfg.pipelines !== undefined) result.pipelines = cfg.pipelines;
   }
 
   return result;
@@ -148,10 +149,139 @@ export function validateConfig(config: OrchestratorConfig): void {
     errors.push('concurrency must be at least 1');
   }
 
+  // Validate pipelines if present
+  if (config.pipelines?.length) {
+    errors.push(...validatePipelines(config.pipelines));
+  }
+
   if (errors.length) {
     errors.forEach((e) => console.error(`❌ ${e}`));
     process.exit(1);
   }
+}
+
+/**
+ * Validate pipeline definitions: unique IDs, valid `after` references, no cycles.
+ */
+export function validatePipelines(pipelines: Pipeline[]): string[] {
+  const errors: string[] = [];
+  const pipelineIds = new Set<string>();
+
+  for (const pipeline of pipelines) {
+    if (!pipeline.id) {
+      errors.push('Pipeline is missing an "id" field');
+      continue;
+    }
+    if (pipelineIds.has(pipeline.id)) {
+      errors.push(`Duplicate pipeline ID: "${pipeline.id}"`);
+      continue;
+    }
+    pipelineIds.add(pipeline.id);
+
+    if (!pipeline.name) {
+      errors.push(`Pipeline "${pipeline.id}": missing "name" field`);
+    }
+
+    if (!pipeline.stages?.length) {
+      errors.push(`Pipeline "${pipeline.id}": must have at least one stage`);
+      continue;
+    }
+
+    // Check stage IDs are unique within the pipeline
+    const stageIds = new Set<string>();
+    for (const stage of pipeline.stages) {
+      if (!stage.id) {
+        errors.push(`Pipeline "${pipeline.id}": stage is missing an "id" field`);
+        continue;
+      }
+      if (stageIds.has(stage.id)) {
+        errors.push(`Pipeline "${pipeline.id}": duplicate stage ID "${stage.id}"`);
+        continue;
+      }
+      stageIds.add(stage.id);
+
+      if (!stage.projectId) {
+        errors.push(`Pipeline "${pipeline.id}", stage "${stage.id}": missing "projectId"`);
+      }
+      if (!stage.epicId) {
+        errors.push(`Pipeline "${pipeline.id}", stage "${stage.id}": missing "epicId"`);
+      }
+    }
+
+    // Validate `after` references exist
+    for (const stage of pipeline.stages) {
+      if (!stage.after?.length) continue;
+      for (const dep of stage.after) {
+        if (!stageIds.has(dep)) {
+          errors.push(
+            `Pipeline "${pipeline.id}", stage "${stage.id}": "after" references unknown stage "${dep}"`
+          );
+        }
+        if (dep === stage.id) {
+          errors.push(
+            `Pipeline "${pipeline.id}", stage "${stage.id}": stage cannot depend on itself`
+          );
+        }
+      }
+    }
+
+    // DAG cycle detection (topological sort via Kahn's algorithm)
+    const cycleError = detectCycle(pipeline);
+    if (cycleError) {
+      errors.push(`Pipeline "${pipeline.id}": ${cycleError}`);
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Detect cycles in pipeline stage dependencies using Kahn's algorithm.
+ * Returns an error message if a cycle is found, or null if the DAG is valid.
+ */
+function detectCycle(pipeline: Pipeline): string | null {
+  const stages = pipeline.stages;
+  const inDegree = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+
+  for (const stage of stages) {
+    inDegree.set(stage.id, 0);
+    adjacency.set(stage.id, []);
+  }
+
+  for (const stage of stages) {
+    if (!stage.after?.length) continue;
+    for (const dep of stage.after) {
+      if (!adjacency.has(dep)) continue; // invalid ref, caught above
+      adjacency.get(dep)!.push(stage.id);
+      inDegree.set(stage.id, (inDegree.get(stage.id) ?? 0) + 1);
+    }
+  }
+
+  const queue: string[] = [];
+  for (const [id, degree] of inDegree) {
+    if (degree === 0) queue.push(id);
+  }
+
+  let visited = 0;
+  while (queue.length) {
+    const current = queue.shift()!;
+    visited++;
+    for (const next of adjacency.get(current) ?? []) {
+      const newDegree = (inDegree.get(next) ?? 1) - 1;
+      inDegree.set(next, newDegree);
+      if (newDegree === 0) queue.push(next);
+    }
+  }
+
+  if (visited < stages.length) {
+    const cycleStages = stages
+      .filter((s) => (inDegree.get(s.id) ?? 0) > 0)
+      .map((s) => s.id);
+    return `cycle detected among stages: ${cycleStages.join(', ')}`;
+  }
+
+  return null;
 }
 
 export function saveConfig(config: Partial<OrchestratorConfig>, configPath?: string): void {

@@ -45,6 +45,10 @@ function makeRunner(overrides: Partial<RunnerService> = {}): RunnerService {
     restart: async () => {},
     hasLastRun: () => false,
     getLastRun: () => undefined,
+    startPipeline: () => ({ id: 'run-1', pipelineId: 'test', status: 'running' as const, stages: [], startedAt: Date.now() }),
+    getPipelineRun: () => undefined,
+    getActivePipelineRuns: () => [],
+    stopPipelineRun: async () => {},
     ...overrides,
   };
 }
@@ -466,6 +470,125 @@ describe('API routes', () => {
 
       const projectsRes = await fetch(`${baseUrl}/api/projects`);
       expect(projectsRes.status).toBe(200);
+    });
+  });
+
+  // ── Pipeline endpoints ──────────────────────────────────────────────
+
+  describe('pipeline endpoints', () => {
+    it('GET /api/pipelines returns configured pipelines', async () => {
+      const config = makeConfig({
+        pipelines: [
+          {
+            id: 'release', name: 'Release', stages: [
+              { id: 'backend', projectId: 'backend-api', epicId: 'api-v2' },
+              { id: 'frontend', projectId: 'frontend-app', epicId: 'ui-update', after: ['backend'] },
+            ],
+          },
+        ],
+      });
+      await startApp({ config });
+      const res = await fetch(`${baseUrl}/api/pipelines`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.pipelines).toHaveLength(1);
+      expect(body.pipelines[0].id).toBe('release');
+    });
+
+    it('GET /api/pipelines returns empty array when none configured', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/pipelines`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.pipelines).toEqual([]);
+    });
+
+    it('POST /api/pipelines/run returns 400 without pipelineId', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/pipelines/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body.error).toContain('pipelineId');
+    });
+
+    it('POST /api/pipelines/run returns 404 for unknown pipeline', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/pipelines/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pipelineId: 'nonexistent' }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(404);
+      expect(body.error).toContain('not found');
+    });
+
+    it('POST /api/pipelines/run starts a pipeline', async () => {
+      const config = makeConfig({
+        pipelines: [
+          {
+            id: 'release', name: 'Release', stages: [
+              { id: 'backend', projectId: 'backend-api', epicId: 'api-v2' },
+            ],
+          },
+        ],
+      });
+      const runner = makeRunner({
+        startPipeline: () => ({
+          id: 'run-123', pipelineId: 'release', status: 'running',
+          stages: [{ stageId: 'backend', status: 'queued' }],
+          startedAt: Date.now(),
+        }),
+      });
+      await startApp({ config, runner });
+      const res = await fetch(`${baseUrl}/api/pipelines/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pipelineId: 'release' }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.pipelineRunId).toBe('run-123');
+    });
+
+    it('GET /api/pipelines/run/status returns active runs', async () => {
+      const runner = makeRunner({
+        getActivePipelineRuns: () => [{
+          id: 'run-1', pipelineId: 'release', status: 'running',
+          stages: [{ stageId: 'backend', status: 'done', startedAt: 1000, completedAt: 2000 }],
+          startedAt: 1000,
+        }],
+      });
+      await startApp({ runner });
+      const res = await fetch(`${baseUrl}/api/pipelines/run/status`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.runs).toHaveLength(1);
+      expect(body.runs[0].id).toBe('run-1');
+    });
+
+    it('POST /api/pipelines/run/stop returns 400 without pipelineRunId', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/pipelines/run/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body.error).toContain('pipelineRunId');
     });
   });
 

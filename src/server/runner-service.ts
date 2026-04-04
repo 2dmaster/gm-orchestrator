@@ -8,6 +8,10 @@ import type {
   Task,
   ServerEvent,
   LastRunState,
+  Pipeline,
+  PipelineRun,
+  PipelineStageRun,
+  PipelineStageStatus,
 } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
 import { buildPrompt } from '../core/prompt-builder.js';
@@ -266,6 +270,10 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
   const PRIORITY_MAP: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
+  // ─── Pipeline run tracking ─────────────────────────────────────────────
+  const pipelineRuns = new Map<string, PipelineRun>();
+  let _pipelineRunCounter = 0;
+
   function ensureScheduler(): Scheduler {
     if (scheduler) return scheduler;
 
@@ -292,6 +300,15 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
           type: 'scheduler:slot_started',
           payload: { slotId, projectId: request.projectId, mode: request.mode },
         });
+
+        // Pipeline stage tracking
+        if (request.pipelineRunId && request.stageId) {
+          updatePipelineStage(request.pipelineRunId, request.stageId, 'running');
+          emit({
+            type: 'pipeline:stage_started',
+            payload: { pipelineRunId: request.pipelineRunId, stageId: request.stageId },
+          });
+        }
       },
       onSlotCompleted: (slotId, request, stats) => {
         logger.info(`Scheduler: slot ${slotId} completed for project "${request.projectId}"`);
@@ -303,10 +320,31 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
           type: 'scheduler:slot_completed',
           payload: { slotId, projectId: request.projectId, stats },
         });
+
+        // Pipeline stage tracking
+        if (request.pipelineRunId && request.stageId) {
+          const stageStatus: PipelineStageStatus = stats.errors > 0 ? 'failed' : 'done';
+          updatePipelineStage(request.pipelineRunId, request.stageId, stageStatus);
+          emit({
+            type: 'pipeline:stage_completed',
+            payload: { pipelineRunId: request.pipelineRunId, stageId: request.stageId, status: stageStatus },
+          });
+          checkPipelineComplete(request.pipelineRunId);
+        }
       },
       onSlotError: (slotId, request, error) => {
         logger.error(`Scheduler: slot ${slotId} error for project "${request.projectId}": ${error.message}`);
         emit({ type: 'error', payload: { message: error.message, projectId: request.projectId } });
+
+        // Pipeline stage tracking — mark as failed
+        if (request.pipelineRunId && request.stageId) {
+          updatePipelineStage(request.pipelineRunId, request.stageId, 'failed', error.message);
+          emit({
+            type: 'pipeline:stage_completed',
+            payload: { pipelineRunId: request.pipelineRunId, stageId: request.stageId, status: 'failed' },
+          });
+          checkPipelineComplete(request.pipelineRunId);
+        }
       },
       onQueueDrained: () => {
         logger.info('Scheduler: all runs complete');
@@ -448,6 +486,150 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info(`Runner: stopped project "${projectId}"`);
   }
 
+  // ─── Pipeline helpers ──────────────────────────────────────────────────
+
+  function updatePipelineStage(
+    pipelineRunId: string,
+    stageId: string,
+    status: PipelineStageStatus,
+    error?: string,
+  ): void {
+    const run = pipelineRuns.get(pipelineRunId);
+    if (!run) return;
+    const stage = run.stages.find((s) => s.stageId === stageId);
+    if (!stage) return;
+    stage.status = status;
+    if (status === 'running') stage.startedAt = Date.now();
+    if (status === 'done' || status === 'failed' || status === 'cancelled') {
+      stage.completedAt = Date.now();
+    }
+    if (error) stage.error = error;
+  }
+
+  function checkPipelineComplete(pipelineRunId: string): void {
+    const run = pipelineRuns.get(pipelineRunId);
+    if (!run || run.status !== 'running') return;
+
+    const allDone = run.stages.every(
+      (s) => s.status === 'done' || s.status === 'failed' || s.status === 'cancelled',
+    );
+    if (!allDone) return;
+
+    const hasFailed = run.stages.some((s) => s.status === 'failed');
+    const hasCancelled = run.stages.some((s) => s.status === 'cancelled');
+
+    run.status = hasFailed ? 'failed' : hasCancelled ? 'cancelled' : 'done';
+    run.completedAt = Date.now();
+
+    emit({
+      type: 'pipeline:complete',
+      payload: { pipelineRunId, status: run.status },
+    });
+    logger.info(`Pipeline run "${pipelineRunId}" completed with status: ${run.status}`);
+  }
+
+  function getPipeline(pipelineId: string): Pipeline | undefined {
+    return deps.config.pipelines?.find((p) => p.id === pipelineId);
+  }
+
+  function startPipeline(pipelineId: string): PipelineRun {
+    const pipeline = getPipeline(pipelineId);
+    if (!pipeline) {
+      throw new Error(`Pipeline "${pipelineId}" not found in config`);
+    }
+
+    const pipelineRunId = `pipeline-run-${Date.now()}-${++_pipelineRunCounter}`;
+
+    const stageRuns: PipelineStageRun[] = pipeline.stages.map((stage) => ({
+      stageId: stage.id,
+      status: 'queued' as PipelineStageStatus,
+    }));
+
+    const run: PipelineRun = {
+      id: pipelineRunId,
+      pipelineId,
+      status: 'running',
+      stages: stageRuns,
+      startedAt: Date.now(),
+    };
+
+    pipelineRuns.set(pipelineRunId, run);
+
+    // Enqueue all stages with dependency metadata
+    const sched = ensureScheduler();
+    for (const stage of pipeline.stages) {
+      sched.enqueue({
+        projectId: stage.projectId,
+        mode: 'epic',
+        epicId: stage.epicId,
+        priority: PRIORITY_MAP['high']!,
+        pipelineRunId,
+        stageId: stage.id,
+        afterStages: stage.after ?? [],
+      });
+    }
+    sched.start();
+
+    emit({
+      type: 'pipeline:started',
+      payload: { pipelineRunId, pipelineId },
+    });
+    logger.info(`Pipeline "${pipeline.name}" started (runId=${pipelineRunId}, stages=${pipeline.stages.length})`);
+
+    return run;
+  }
+
+  function getPipelineRun(pipelineRunId: string): PipelineRun | undefined {
+    return pipelineRuns.get(pipelineRunId);
+  }
+
+  function getActivePipelineRuns(): PipelineRun[] {
+    return [...pipelineRuns.values()].filter((r) => r.status === 'running');
+  }
+
+  async function stopPipelineRun(pipelineRunId: string): Promise<void> {
+    const run = pipelineRuns.get(pipelineRunId);
+    if (!run || run.status !== 'running') return;
+
+    // Cancel queued stages and stop running ones
+    if (scheduler) {
+      // Remove queued requests for this pipeline run
+      const queuedIds = scheduler.queue
+        .filter((r) => r.pipelineRunId === pipelineRunId)
+        .map((r) => r.id);
+      for (const id of queuedIds) {
+        scheduler.cancel(id);
+      }
+
+      // Stop running slots for pipeline stages
+      const runningStages = run.stages.filter((s) => s.status === 'running');
+      for (const stage of runningStages) {
+        const pipeline = getPipeline(run.pipelineId);
+        const pipelineStage = pipeline?.stages.find((s) => s.id === stage.stageId);
+        if (pipelineStage) {
+          await scheduler.stopProject(pipelineStage.projectId);
+        }
+      }
+    }
+
+    // Mark remaining stages as cancelled
+    for (const stage of run.stages) {
+      if (stage.status === 'queued' || stage.status === 'running') {
+        stage.status = 'cancelled';
+        stage.completedAt = Date.now();
+      }
+    }
+
+    run.status = 'cancelled';
+    run.completedAt = Date.now();
+
+    emit({
+      type: 'pipeline:complete',
+      payload: { pipelineRunId, status: 'cancelled' },
+    });
+    logger.info(`Pipeline run "${pipelineRunId}" cancelled`);
+  }
+
   // ─── Last-run persistence for restart across process restarts ──────────
 
   function persistLastRun(state: LastRunState | undefined): void {
@@ -557,5 +739,10 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     restart,
     hasLastRun,
     getLastRun: getPersistedLastRun,
+    // Pipeline
+    startPipeline,
+    getPipelineRun,
+    getActivePipelineRuns,
+    stopPipelineRun,
   };
 }

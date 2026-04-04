@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task, CrossProjectTask } from '../core/types.js';
+import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task, CrossProjectTask, PipelineRun } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
 import { collectCrossProjectEpicTasks } from '../core/orchestrator.js';
 import type { RunSnapshot, MultiRunSnapshot } from './runner-service.js';
@@ -31,6 +31,11 @@ export interface RunnerService {
   restart(): Promise<void>;
   hasLastRun(): boolean;
   getLastRun(): import('../core/types.js').LastRunState | undefined;
+  // Pipeline
+  startPipeline(pipelineId: string): PipelineRun;
+  getPipelineRun(pipelineRunId: string): PipelineRun | undefined;
+  getActivePipelineRuns(): PipelineRun[];
+  stopPipelineRun(pipelineRunId: string): Promise<void>;
 }
 
 // ─── Dependencies ───────────────────────────────────────────────────────
@@ -457,6 +462,75 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(409).json({ error: msg });
         return;
       }
+      next(err);
+    }
+  });
+
+  // ── Pipeline endpoints ──────────────────────────────────────────────
+
+  // GET /api/pipelines — list configured pipelines
+  router.get('/api/pipelines', requireSetup, (_req: Request, res: Response) => {
+    const pipelines = deps.config.pipelines ?? [];
+    res.json({ pipelines });
+  });
+
+  // POST /api/pipelines/run — start a pipeline run
+  router.post('/api/pipelines/run', requireSetup, (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { pipelineId } = req.body as { pipelineId?: string };
+      if (!pipelineId || typeof pipelineId !== 'string') {
+        res.status(400).json({ error: 'pipelineId is required' });
+        return;
+      }
+      const pipeline = (deps.config.pipelines ?? []).find((p) => p.id === pipelineId);
+      if (!pipeline) {
+        res.status(404).json({ error: `Pipeline "${pipelineId}" not found` });
+        return;
+      }
+      const run = deps.runner.startPipeline(pipelineId);
+      res.json({ ok: true, pipelineRunId: run.id, pipelineId, stages: run.stages.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /api/pipelines/run/status — get pipeline run status
+  router.get('/api/pipelines/run/status', requireSetup, (req: Request, res: Response) => {
+    const pipelineRunId = req.query['pipelineRunId'] as string | undefined;
+    if (pipelineRunId) {
+      const run = deps.runner.getPipelineRun(pipelineRunId);
+      if (!run) {
+        res.status(404).json({ error: `Pipeline run "${pipelineRunId}" not found` });
+        return;
+      }
+      res.json({ run });
+      return;
+    }
+    // Return all active pipeline runs
+    const runs = deps.runner.getActivePipelineRuns();
+    res.json({ runs });
+  });
+
+  // POST /api/pipelines/run/stop — stop a pipeline run
+  router.post('/api/pipelines/run/stop', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { pipelineRunId } = req.body as { pipelineRunId?: string };
+      if (!pipelineRunId || typeof pipelineRunId !== 'string') {
+        res.status(400).json({ error: 'pipelineRunId is required' });
+        return;
+      }
+      const run = deps.runner.getPipelineRun(pipelineRunId);
+      if (!run) {
+        res.status(404).json({ error: `Pipeline run "${pipelineRunId}" not found` });
+        return;
+      }
+      if (run.status !== 'running') {
+        res.status(409).json({ error: `Pipeline run is not running (status: ${run.status})` });
+        return;
+      }
+      await deps.runner.stopPipelineRun(pipelineRunId);
+      res.json({ ok: true, pipelineRunId });
+    } catch (err) {
       next(err);
     }
   });
