@@ -10,10 +10,14 @@ export interface UseOrchestratorReturn {
   stopProject: (projectId: string) => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
+  pauseProject: (projectId: string) => Promise<void>;
+  resumeProject: (projectId: string) => Promise<void>;
+  isProjectPaused: (projectId: string) => boolean;
   isRunning: boolean;
   isPaused: boolean;
   isProjectRunning: (projectId: string) => boolean;
   runningProjectIds: string[];
+  pausedProjectIds: string[];
   status: StatusResponse | null;
   // Pipeline
   pipelines: Pipeline[];
@@ -41,6 +45,7 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
   const [paused, setPaused] = useState(false);
+  const [pausedProjects, setPausedProjects] = useState<Set<string>>(new Set());
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [pipelineRuns, setPipelineRuns] = useState<PipelineRun[]>([]);
 
@@ -134,6 +139,24 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
       case 'run:resumed':
         setPaused(false);
         break;
+      case 'run:project_paused': {
+        const ppid = (evt as { payload?: { projectId?: string } }).payload?.projectId;
+        if (ppid) {
+          setPausedProjects((prev) => new Set([...prev, ppid]));
+        }
+        break;
+      }
+      case 'run:project_resumed': {
+        const rpid = (evt as { payload?: { projectId?: string } }).payload?.projectId;
+        if (rpid) {
+          setPausedProjects((prev) => {
+            const next = new Set(prev);
+            next.delete(rpid);
+            return next;
+          });
+        }
+        break;
+      }
       case 'pipeline:started':
       case 'pipeline:stage_started':
       case 'pipeline:stage_completed':
@@ -176,6 +199,25 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     setPaused(false);
   }, []);
 
+  const pauseProject = useCallback(async (projectId: string) => {
+    await post('/api/run/pause-project', { projectId });
+    setPausedProjects((prev) => new Set([...prev, projectId]));
+  }, []);
+
+  const resumeProject = useCallback(async (projectId: string) => {
+    await post('/api/run/resume-project', { projectId });
+    setPausedProjects((prev) => {
+      const next = new Set(prev);
+      next.delete(projectId);
+      return next;
+    });
+  }, []);
+
+  const isProjectPaused = useCallback(
+    (projectId: string) => pausedProjects.has(projectId),
+    [pausedProjects],
+  );
+
   const startPipeline = useCallback(async (pipelineId: string) => {
     await post('/api/pipelines/run', { pipelineId });
     fetchPipelineRuns();
@@ -207,10 +249,14 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     stopProject,
     pause,
     resume,
+    pauseProject,
+    resumeProject,
+    isProjectPaused,
     isRunning: runningIds.size > 0,
     isPaused: paused,
     isProjectRunning,
     runningProjectIds: [...runningIds],
+    pausedProjectIds: [...pausedProjects],
     status,
     pipelines,
     pipelineRuns,

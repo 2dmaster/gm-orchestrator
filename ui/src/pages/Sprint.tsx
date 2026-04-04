@@ -157,13 +157,19 @@ function SprintTaskRow({ item }: { item: SprintTask }) {
 function RunCard({
   run,
   isSelected,
+  isPaused,
   onSelect,
   onStop,
+  onPause,
+  onResume,
 }: {
   run: RunEntry;
   isSelected: boolean;
+  isPaused: boolean;
   onSelect: () => void;
   onStop: () => void;
+  onPause: () => void;
+  onResume: () => void;
 }) {
   const taskList = Array.from(run.tasks.values());
   const doneCount = taskList.filter((t) => t.task.status === "done").length;
@@ -210,13 +216,23 @@ function RunCard({
             <span className="text-[10px] text-muted-foreground font-mono">{elapsed}</span>
           )}
           {run.status === "running" && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onStop(); }}
-              className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
-            >
-              <StopCircle className="w-3.5 h-3.5" />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); isPaused ? onResume() : onPause(); }}
+                className={`transition-colors p-0.5 ${isPaused ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"}`}
+                title={isPaused ? "Resume project" : "Pause project"}
+              >
+                {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onStop(); }}
+                className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
+              >
+                <StopCircle className="w-3.5 h-3.5" />
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -770,12 +786,16 @@ export default function Sprint() {
         updateRun(pid, (run) => {
           const tasks = new Map(run.tasks);
           tasks.set(t.id, { task: { ...t, status: "in_progress" }, startedAt: Date.now() });
+          // Preserve log history — add task separator instead of clearing
+          const separator = run.logLines.length > 0
+            ? [`\n──── Task: ${t.title} ────`]
+            : [`──── Task: ${t.title} ────`];
           return {
             ...run,
             tasks,
             currentTaskId: t.id,
             currentTaskTitle: t.title,
-            logLines: [],
+            logLines: [...run.logLines, ...separator],
             agentState: EMPTY_AGENT_STATE,
             eventIdCounter: 0,
           };
@@ -812,7 +832,7 @@ export default function Sprint() {
             tasks,
             currentTaskId: t.id,
             currentTaskTitle: t.title,
-            logLines: [],
+            logLines: [...run.logLines, `\n──── Retry: ${t.title} (attempt ${evt.payload.attempt}) ────`],
           };
         });
         break;
@@ -1051,40 +1071,6 @@ export default function Sprint() {
             </>
           )}
 
-          {/* Pause/Resume toggle */}
-          {orchestrator.isRunning && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      (orchestrator.isPaused ? orchestrator.resume() : orchestrator.pause()).catch((err) => {
-                        toast.error((err as Error).message);
-                      });
-                    }}
-                    className={`w-full flex items-center justify-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                      orchestrator.isPaused
-                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
-                        : "border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
-                    }`}
-                  >
-                    {orchestrator.isPaused ? (
-                      <><Play className="w-3.5 h-3.5" /> Resume Queue</>
-                    ) : (
-                      <><Pause className="w-3.5 h-3.5" /> Pause Queue</>
-                    )}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  {orchestrator.isPaused
-                    ? "Resume scheduling — queued tasks will start"
-                    : "Pause scheduling — running tasks continue, queue is frozen"}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
-
           {/* Project runs */}
           <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium px-1 mb-2">
             Runs ({runList.length})
@@ -1094,11 +1080,22 @@ export default function Sprint() {
               key={run.projectId}
               run={run}
               isSelected={selectedProjectId === run.projectId && !selectedPipelineRunId}
+              isPaused={orchestrator.isProjectPaused(run.projectId)}
               onSelect={() => {
                 setSelectedProjectId(run.projectId);
                 setSelectedPipelineRunId(null);
               }}
               onStop={() => handleStopProject(run.projectId)}
+              onPause={() => {
+                orchestrator.pauseProject(run.projectId).catch((err) => {
+                  toast.error((err as Error).message);
+                });
+              }}
+              onResume={() => {
+                orchestrator.resumeProject(run.projectId).catch((err) => {
+                  toast.error((err as Error).message);
+                });
+              }}
             />
           ))}
         </div>

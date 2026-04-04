@@ -159,6 +159,13 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
     [epics, showClosedEpics]
   );
 
+  // Reset selected epic if it's no longer in the visible list (e.g. after toggling filter)
+  useEffect(() => {
+    if (selectedEpicId && visibleEpics.length > 0 && !visibleEpics.some((e) => e.id === selectedEpicId)) {
+      setSelectedEpicId("");
+    }
+  }, [selectedEpicId, visibleEpics]);
+
   // items map for base-ui Select — maps value (id) → display label (title)
   const epicItems = useMemo(() => {
     const map: Record<string, string> = {};

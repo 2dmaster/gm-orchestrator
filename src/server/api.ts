@@ -28,6 +28,9 @@ export interface RunnerService {
   stop(): Promise<void>;
   pause(): void;
   resume(): void;
+  pauseProject(projectId: string): void;
+  resumeProject(projectId: string): void;
+  isProjectPaused(projectId: string): boolean;
   restart(): Promise<void>;
   hasLastRun(): boolean;
   getLastRun(): import('../core/types.js').LastRunState | undefined;
@@ -451,6 +454,36 @@ export function createApiRouter(deps: ApiDeps): Router {
     }
     deps.runner.resume();
     res.json({ ok: true });
+  });
+
+  // POST /api/run/pause-project
+  router.post('/api/run/pause-project', requireSetup, (req: Request, res: Response) => {
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId || typeof projectId !== 'string') {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    if (deps.runner.isProjectPaused(projectId)) {
+      res.status(409).json({ error: `Project "${projectId}" is already paused` });
+      return;
+    }
+    deps.runner.pauseProject(projectId);
+    res.json({ ok: true, projectId });
+  });
+
+  // POST /api/run/resume-project
+  router.post('/api/run/resume-project', requireSetup, (req: Request, res: Response) => {
+    const { projectId } = req.body as { projectId?: string };
+    if (!projectId || typeof projectId !== 'string') {
+      res.status(400).json({ error: 'projectId is required' });
+      return;
+    }
+    if (!deps.runner.isProjectPaused(projectId)) {
+      res.status(409).json({ error: `Project "${projectId}" is not paused` });
+      return;
+    }
+    deps.runner.resumeProject(projectId);
+    res.json({ ok: true, projectId });
   });
 
   // POST /api/run/restart — restart the last stopped/completed run

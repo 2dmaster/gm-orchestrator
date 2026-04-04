@@ -702,6 +702,24 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info('Runner: resumed');
   }
 
+  function pauseProject(projectId: string): void {
+    if (!scheduler) return;
+    scheduler.pauseProject(projectId);
+    emit({ type: 'run:project_paused', payload: { projectId } });
+    logger.info(`Runner: project "${projectId}" paused`);
+  }
+
+  function resumeProject(projectId: string): void {
+    if (!scheduler) return;
+    scheduler.resumeProject(projectId);
+    emit({ type: 'run:project_resumed', payload: { projectId } });
+    logger.info(`Runner: project "${projectId}" resumed`);
+  }
+
+  function isProjectPaused(projectId: string): boolean {
+    return scheduler?.isProjectPaused(projectId) ?? false;
+  }
+
   async function restart(): Promise<void> {
     // Read from persisted config if no in-memory state (process was restarted)
     const r = getPersistedLastRun();
@@ -754,6 +772,9 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     stop: stopAll,
     pause,
     resume,
+    pauseProject,
+    resumeProject,
+    isProjectPaused,
     restart,
     hasLastRun,
     getLastRun: getPersistedLastRun,

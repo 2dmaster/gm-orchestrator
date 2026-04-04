@@ -112,6 +112,18 @@ export interface Scheduler {
 
   /** Check if a pipeline run is paused. */
   isPipelinePaused(pipelineRunId: string): boolean;
+
+  /** Pause a specific project — its queued requests won't be picked. Running task continues. */
+  pauseProject(projectId: string): void;
+
+  /** Resume a paused project — its requests become eligible again. */
+  resumeProject(projectId: string): void;
+
+  /** Check if a project is paused. */
+  isProjectPaused(projectId: string): boolean;
+
+  /** Get all paused project IDs. */
+  readonly pausedProjectIds: ReadonlySet<string>;
 }
 
 // ─── Implementation ─────────────────────────────────────────────────────
@@ -162,6 +174,7 @@ export function createScheduler(
   let paused = false;
   let totalStats: SprintStats = createEmptyStats();
   const pausedPipelines = new Set<string>();
+  const pausedProjects = new Set<string>();
 
   // Track which projects have active slots for round-robin fairness
   let lastProjectIndex = -1;
@@ -201,6 +214,7 @@ export function createScheduler(
    * Non-pipeline requests are always ready.
    */
   function isStageReady(request: RunRequest): boolean {
+    if (pausedProjects.has(request.projectId)) return false;
     if (request.pipelineRunId && pausedPipelines.has(request.pipelineRunId)) return false;
     if (!request.pipelineRunId || !request.afterStages?.length) return true;
     const done = completedStages.get(request.pipelineRunId);
@@ -455,6 +469,21 @@ export function createScheduler(
     },
     isPipelinePaused(pipelineRunId: string): boolean {
       return pausedPipelines.has(pipelineRunId);
+    },
+    pauseProject(projectId: string) {
+      pausedProjects.add(projectId);
+      ports.logger.info(`Scheduler: project "${projectId}" paused — queued requests frozen`);
+    },
+    resumeProject(projectId: string) {
+      pausedProjects.delete(projectId);
+      ports.logger.info(`Scheduler: project "${projectId}" resumed`);
+      if (running && !paused) scheduleNext();
+    },
+    isProjectPaused(projectId: string): boolean {
+      return pausedProjects.has(projectId);
+    },
+    get pausedProjectIds(): ReadonlySet<string> {
+      return pausedProjects;
     },
   };
 }

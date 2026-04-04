@@ -252,6 +252,8 @@ export type ServerEvent =
   | { type: 'pipeline:complete';        payload: { pipelineRunId: string; status: 'done' | 'failed' | 'cancelled' } }
   | { type: 'run:paused' }
   | { type: 'run:resumed' }
+  | { type: 'run:project_paused';  payload: { projectId: string } }
+  | { type: 'run:project_resumed'; payload: { projectId: string } }
   | { type: 'error';         payload: { message: string; projectId?: string } };
 
 // ─── Ports (interfaces for dependency injection + testability) ────────────
