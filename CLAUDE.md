@@ -56,6 +56,23 @@ tests/         — Vitest tests (unit + integration)
 - `ui/vite.config.ts` — proxy config to :4242 must stay intact
 - `.gm-orchestrator.json` — user config, never overwrite
 
+## Release Checklist
+
+Every release MUST follow these steps in order:
+
+1. **Bump version** in `package.json` (semver: breaking=major, feature=minor, fix=patch)
+2. **Commit** version bump: `chore: release vX.Y.Z`
+3. **Create git tag**: `git tag vX.Y.Z`
+4. **Push commit AND tag**: `git push origin main && git push origin vX.Y.Z`
+   - The tag push triggers `.github/workflows/publish.yml` → npm publish
+5. **Create GitHub Release** via `gh release create vX.Y.Z`:
+   - Title format: `vX.Y.Z — Short summary`
+   - Body: changelog in Keep a Changelog format (`### Added`, `### Fixed`, `### Changed`)
+   - End with `**Full Changelog**: https://github.com/2dmaster/gm-orchestrator/compare/vPREV...vX.Y.Z`
+6. **Verify** npm publish succeeded: `gh run list --workflow=publish.yml --limit 1`
+
+**Never skip steps 3-5.** A version bump without tag+release = invisible to users.
+
 ## GraphMemory connection
 
 - Server: check `baseUrl` in `.gm-orchestrator.json`
