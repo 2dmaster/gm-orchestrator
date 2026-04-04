@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { LayoutDashboard, Play, Settings, Hexagon, Command } from "lucide-react";
+import { LayoutDashboard, Play, Settings, Hexagon, Search } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 
 const NAV_ITEMS = [
@@ -18,6 +18,7 @@ interface ShellProps {
 export default function Shell({ projectId, taskCount, children }: ShellProps) {
   const location = useLocation();
   const [version, setVersion] = useState<string | null>(null);
+  const isMac = useMemo(() => navigator.platform.toUpperCase().includes("MAC"), []);
 
   useEffect(() => {
     (async () => {
@@ -75,15 +76,21 @@ export default function Shell({ projectId, taskCount, children }: ShellProps) {
               <p className="text-[10px] text-muted-foreground">{taskCount} tasks</p>
             </div>
           )}
-          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <Command className="w-3 h-3" />
-              <span>Cmd+K</span>
-            </div>
-            {version && (
-              <span className="font-mono opacity-60">v{version}</span>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event("open-command-palette"))}
+            className="w-full flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:border-primary/30 transition-colors"
+            title={`Search commands, tasks, epics... ${isMac ? "⌘K" : "Ctrl+K"}`}
+          >
+            <Search className="w-3 h-3 shrink-0" />
+            <span className="flex-1 text-left truncate">Search...</span>
+            <kbd className="ml-auto text-[10px] font-mono opacity-60 shrink-0">
+              {isMac ? "⌘K" : "Ctrl+K"}
+            </kbd>
+          </button>
+          {version && (
+            <p className="text-[10px] text-muted-foreground font-mono text-center opacity-60">v{version}</p>
+          )}
         </div>
       </aside>
 

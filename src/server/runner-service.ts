@@ -630,6 +630,24 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info(`Pipeline run "${pipelineRunId}" cancelled`);
   }
 
+  function pausePipelineRun(pipelineRunId: string): void {
+    const run = pipelineRuns.get(pipelineRunId);
+    if (!run || run.status !== 'running') return;
+    if (scheduler) {
+      scheduler.pausePipeline(pipelineRunId);
+    }
+    logger.info(`Pipeline run "${pipelineRunId}" paused`);
+  }
+
+  function resumePipelineRun(pipelineRunId: string): void {
+    const run = pipelineRuns.get(pipelineRunId);
+    if (!run || run.status !== 'running') return;
+    if (scheduler) {
+      scheduler.resumePipeline(pipelineRunId);
+    }
+    logger.info(`Pipeline run "${pipelineRunId}" resumed`);
+  }
+
   // ─── Last-run persistence for restart across process restarts ──────────
 
   function persistLastRun(state: LastRunState | undefined): void {
@@ -744,5 +762,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     getPipelineRun,
     getActivePipelineRuns,
     stopPipelineRun,
+    pausePipelineRun,
+    resumePipelineRun,
   };
 }

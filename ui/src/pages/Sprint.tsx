@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Check, X, Circle, Loader2, Square, ChevronDown, ChevronRight, Zap, Coins, RotateCw, Clock, AlertTriangle, XCircle, Rocket, StopCircle } from "lucide-react";
+import { Check, X, Circle, Loader2, Square, ChevronDown, ChevronRight, Zap, Coins, RotateCw, Clock, AlertTriangle, XCircle, Rocket, StopCircle, Pause, Play } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -16,7 +16,7 @@ import {
   TooltipContent,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import type { Task, SprintStats, ServerEvent, PipelineRun, PipelineStageStatus } from "../types";
+import type { Task, SprintStats, ServerEvent, Pipeline, PipelineRun, PipelineStageStatus } from "../types";
 import { Badge } from "@/components/ui/badge";
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -453,11 +453,17 @@ function PipelineRunCard({
   isSelected,
   onSelect,
   onStop,
+  isPaused,
+  onPause,
+  onResume,
 }: {
   run: PipelineRun;
   isSelected: boolean;
   onSelect: () => void;
   onStop: () => void;
+  isPaused: boolean;
+  onPause: () => void;
+  onResume: () => void;
 }) {
   const doneCount = run.stages.filter((s) => s.status === "done").length;
   const failedCount = run.stages.filter((s) => s.status === "failed").length;
@@ -509,16 +515,31 @@ function PipelineRunCard({
             <span className="text-[10px] text-muted-foreground font-mono">{elapsed}</span>
           )}
           {run.status === "running" && (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onStop(); }}
-              className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
-            >
-              <StopCircle className="w-3.5 h-3.5" />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); isPaused ? onResume() : onPause(); }}
+                className={`transition-colors p-0.5 ${isPaused ? "text-primary hover:text-primary/80" : "text-muted-foreground hover:text-foreground"}`}
+                title={isPaused ? "Resume pipeline" : "Pause pipeline"}
+              >
+                {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onStop(); }}
+                className="text-muted-foreground hover:text-destructive transition-colors p-0.5"
+              >
+                <StopCircle className="w-3.5 h-3.5" />
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {/* Paused indicator */}
+      {isPaused && run.status === "running" && (
+        <p className="text-[10px] text-primary font-medium">Paused</p>
+      )}
 
       {/* Stage progress */}
       <div className="space-y-1.5">
@@ -561,7 +582,7 @@ function PipelineRunCard({
 
 // ─── Pipeline Run detail panel ──────────────────────────────────────────
 
-function PipelineRunDetail({ run }: { run: PipelineRun }) {
+function PipelineRunDetail({ run, pipelines, onSelectProject }: { run: PipelineRun; pipelines: Pipeline[]; onSelectProject: (projectId: string) => void }) {
   const doneCount = run.stages.filter((s) => s.status === "done").length;
   const totalCount = run.stages.length;
   const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
@@ -578,6 +599,8 @@ function PipelineRunDetail({ run }: { run: PipelineRun }) {
     return () => clearInterval(id);
   }, [run.startedAt, run.completedAt, run.status]);
 
+  const pipelineDef = pipelines.find((p) => p.id === run.pipelineId);
+  const stageProjectMap = new Map(pipelineDef?.stages.map((s) => [s.id, s.projectId]) ?? []);
   const statusLabel = run.status === "running" ? "Running" : run.status === "done" ? "Complete" : run.status === "failed" ? "Failed" : "Cancelled";
 
   return (
@@ -609,8 +632,15 @@ function PipelineRunDetail({ run }: { run: PipelineRun }) {
               ? formatElapsed(Date.now() - stage.startedAt)
               : null;
 
+            const projectId = stageProjectMap.get(stage.stageId);
+            const isClickable = !!projectId && (stage.status === "running" || stage.status === "done" || stage.status === "failed");
+
             return (
-              <Card key={stage.stageId}>
+              <Card
+                key={stage.stageId}
+                className={isClickable ? "cursor-pointer hover:border-primary/40 transition-colors" : ""}
+                onClick={() => { if (isClickable && projectId) onSelectProject(projectId); }}
+              >
                 <CardContent className="py-3 px-4">
                   <div className="flex items-center gap-3">
                     {stage.status === "done" && <Check className="w-4 h-4 text-[var(--color-done)] shrink-0" />}
@@ -620,6 +650,10 @@ function PipelineRunDetail({ run }: { run: PipelineRun }) {
                     {stage.status === "cancelled" && <Square className="w-4 h-4 text-muted-foreground shrink-0" />}
 
                     <span className="text-sm font-medium flex-1">{stage.stageId}</span>
+
+                    {projectId && (
+                      <span className="text-[10px] text-muted-foreground">{projectId}</span>
+                    )}
 
                     {duration && (
                       <span className="text-xs text-muted-foreground font-mono">{duration}</span>
@@ -648,6 +682,7 @@ export default function Sprint() {
   const [runs, setRuns] = useState<Map<string, RunEntry>>(new Map());
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedPipelineRunId, setSelectedPipelineRunId] = useState<string | null>(null);
+  const [pausedPipelines, setPausedPipelines] = useState<Set<string>>(new Set());
 
   // Helper to update a run entry immutably
   const updateRun = useCallback((projectId: string, updater: (run: RunEntry) => RunEntry) => {
@@ -983,6 +1018,7 @@ export default function Sprint() {
                   key={pRun.id}
                   run={pRun}
                   isSelected={selectedPipelineRunId === pRun.id}
+                  isPaused={pausedPipelines.has(pRun.id)}
                   onSelect={() => {
                     setSelectedPipelineRunId(pRun.id);
                     setSelectedProjectId(null);
@@ -992,9 +1028,61 @@ export default function Sprint() {
                       toast.error((err as Error).message);
                     });
                   }}
+                  onPause={() => {
+                    orchestrator.pausePipeline(pRun.id).then(() => {
+                      setPausedPipelines((prev) => new Set([...prev, pRun.id]));
+                    }).catch((err) => {
+                      toast.error((err as Error).message);
+                    });
+                  }}
+                  onResume={() => {
+                    orchestrator.resumePipeline(pRun.id).then(() => {
+                      setPausedPipelines((prev) => {
+                        const next = new Set(prev);
+                        next.delete(pRun.id);
+                        return next;
+                      });
+                    }).catch((err) => {
+                      toast.error((err as Error).message);
+                    });
+                  }}
                 />
               ))}
             </>
+          )}
+
+          {/* Pause/Resume toggle */}
+          {orchestrator.isRunning && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      (orchestrator.isPaused ? orchestrator.resume() : orchestrator.pause()).catch((err) => {
+                        toast.error((err as Error).message);
+                      });
+                    }}
+                    className={`w-full flex items-center justify-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                      orchestrator.isPaused
+                        ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+                        : "border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
+                    }`}
+                  >
+                    {orchestrator.isPaused ? (
+                      <><Play className="w-3.5 h-3.5" /> Resume Queue</>
+                    ) : (
+                      <><Pause className="w-3.5 h-3.5" /> Pause Queue</>
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  {orchestrator.isPaused
+                    ? "Resume scheduling — queued tasks will start"
+                    : "Pause scheduling — running tasks continue, queue is frozen"}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
 
           {/* Project runs */}
@@ -1018,7 +1106,14 @@ export default function Sprint() {
         {/* Right panel — run detail */}
         <div className="flex-1 flex flex-col min-w-0">
           {selectedPipelineRun ? (
-            <PipelineRunDetail run={selectedPipelineRun} />
+            <PipelineRunDetail
+              run={selectedPipelineRun}
+              pipelines={orchestrator.pipelines}
+              onSelectProject={(projectId) => {
+                setSelectedProjectId(projectId);
+                setSelectedPipelineRunId(null);
+              }}
+            />
           ) : selectedRun ? (
             <RunDetail run={selectedRun} />
           ) : (

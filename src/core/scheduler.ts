@@ -103,6 +103,15 @@ export interface Scheduler {
 
   /** Get completed stages per pipeline run (for dependency tracking). */
   readonly completedStages: ReadonlyMap<string, ReadonlySet<string>>;
+
+  /** Pause a specific pipeline run — its queued stages won't be picked. */
+  pausePipeline(pipelineRunId: string): void;
+
+  /** Resume a paused pipeline run — its stages become eligible again. */
+  resumePipeline(pipelineRunId: string): void;
+
+  /** Check if a pipeline run is paused. */
+  isPipelinePaused(pipelineRunId: string): boolean;
 }
 
 // ─── Implementation ─────────────────────────────────────────────────────
@@ -152,6 +161,7 @@ export function createScheduler(
   let running = false;
   let paused = false;
   let totalStats: SprintStats = createEmptyStats();
+  const pausedPipelines = new Set<string>();
 
   // Track which projects have active slots for round-robin fairness
   let lastProjectIndex = -1;
@@ -191,6 +201,7 @@ export function createScheduler(
    * Non-pipeline requests are always ready.
    */
   function isStageReady(request: RunRequest): boolean {
+    if (request.pipelineRunId && pausedPipelines.has(request.pipelineRunId)) return false;
     if (!request.pipelineRunId || !request.afterStages?.length) return true;
     const done = completedStages.get(request.pipelineRunId);
     if (!done) return false;
@@ -433,6 +444,17 @@ export function createScheduler(
     },
     get completedStages(): ReadonlyMap<string, ReadonlySet<string>> {
       return completedStages;
+    },
+    pausePipeline(pipelineRunId: string) {
+      pausedPipelines.add(pipelineRunId);
+    },
+    resumePipeline(pipelineRunId: string) {
+      pausedPipelines.delete(pipelineRunId);
+      // Trigger scheduling to pick newly eligible stages
+      if (running && !paused) scheduleNext();
+    },
+    isPipelinePaused(pipelineRunId: string): boolean {
+      return pausedPipelines.has(pipelineRunId);
     },
   };
 }

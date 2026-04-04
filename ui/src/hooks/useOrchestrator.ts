@@ -8,7 +8,10 @@ export interface UseOrchestratorReturn {
   startTasks: (projectId: string, taskIds: string[]) => Promise<void>;
   stop: () => Promise<void>;
   stopProject: (projectId: string) => Promise<void>;
+  pause: () => Promise<void>;
+  resume: () => Promise<void>;
   isRunning: boolean;
+  isPaused: boolean;
   isProjectRunning: (projectId: string) => boolean;
   runningProjectIds: string[];
   status: StatusResponse | null;
@@ -17,6 +20,8 @@ export interface UseOrchestratorReturn {
   pipelineRuns: PipelineRun[];
   startPipeline: (pipelineId: string) => Promise<void>;
   stopPipeline: (pipelineRunId: string) => Promise<void>;
+  pausePipeline: (pipelineRunId: string) => Promise<void>;
+  resumePipeline: (pipelineRunId: string) => Promise<void>;
   fetchPipelines: () => Promise<void>;
 }
 
@@ -35,6 +40,7 @@ async function post(url: string, body?: Record<string, unknown>): Promise<void> 
 export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
+  const [paused, setPaused] = useState(false);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [pipelineRuns, setPipelineRuns] = useState<PipelineRun[]>([]);
 
@@ -45,6 +51,7 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
       const data = (await res.json()) as StatusResponse;
       setStatus(data);
       setRunningIds(new Set(data.runningProjectIds ?? []));
+      setPaused(data.isPaused ?? false);
     } catch {
       // Ignore fetch errors — server may not be ready yet
     }
@@ -121,6 +128,12 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
         setRunningIds(new Set());
         fetchStatus();
         break;
+      case 'run:paused':
+        setPaused(true);
+        break;
+      case 'run:resumed':
+        setPaused(false);
+        break;
       case 'pipeline:started':
       case 'pipeline:stage_started':
       case 'pipeline:stage_completed':
@@ -153,6 +166,16 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     await post('/api/run/stop', { projectId });
   }, []);
 
+  const pause = useCallback(async () => {
+    await post('/api/run/pause');
+    setPaused(true);
+  }, []);
+
+  const resume = useCallback(async () => {
+    await post('/api/run/resume');
+    setPaused(false);
+  }, []);
+
   const startPipeline = useCallback(async (pipelineId: string) => {
     await post('/api/pipelines/run', { pipelineId });
     fetchPipelineRuns();
@@ -162,6 +185,14 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     await post('/api/pipelines/run/stop', { pipelineRunId });
     fetchPipelineRuns();
   }, [fetchPipelineRuns]);
+
+  const pausePipeline = useCallback(async (pipelineRunId: string) => {
+    await post('/api/pipelines/run/pause', { pipelineRunId });
+  }, []);
+
+  const resumePipeline = useCallback(async (pipelineRunId: string) => {
+    await post('/api/pipelines/run/resume', { pipelineRunId });
+  }, []);
 
   const isProjectRunning = useCallback(
     (projectId: string) => runningIds.has(projectId),
@@ -174,7 +205,10 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     startTasks,
     stop,
     stopProject,
+    pause,
+    resume,
     isRunning: runningIds.size > 0,
+    isPaused: paused,
     isProjectRunning,
     runningProjectIds: [...runningIds],
     status,
@@ -182,6 +216,8 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     pipelineRuns,
     startPipeline,
     stopPipeline,
+    pausePipeline,
+    resumePipeline,
     fetchPipelines,
   };
 }

@@ -36,6 +36,8 @@ export interface RunnerService {
   getPipelineRun(pipelineRunId: string): PipelineRun | undefined;
   getActivePipelineRuns(): PipelineRun[];
   stopPipelineRun(pipelineRunId: string): Promise<void>;
+  pausePipelineRun(pipelineRunId: string): void;
+  resumePipelineRun(pipelineRunId: string): void;
 }
 
 // ─── Dependencies ───────────────────────────────────────────────────────
@@ -533,6 +535,46 @@ export function createApiRouter(deps: ApiDeps): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  // POST /api/pipelines/run/pause — pause a pipeline run
+  router.post('/api/pipelines/run/pause', requireSetup, (req: Request, res: Response) => {
+    const { pipelineRunId } = req.body as { pipelineRunId?: string };
+    if (!pipelineRunId || typeof pipelineRunId !== 'string') {
+      res.status(400).json({ error: 'pipelineRunId is required' });
+      return;
+    }
+    const run = deps.runner.getPipelineRun(pipelineRunId);
+    if (!run) {
+      res.status(404).json({ error: `Pipeline run "${pipelineRunId}" not found` });
+      return;
+    }
+    if (run.status !== 'running') {
+      res.status(409).json({ error: `Pipeline run is not running (status: ${run.status})` });
+      return;
+    }
+    deps.runner.pausePipelineRun(pipelineRunId);
+    res.json({ ok: true, pipelineRunId });
+  });
+
+  // POST /api/pipelines/run/resume — resume a paused pipeline run
+  router.post('/api/pipelines/run/resume', requireSetup, (req: Request, res: Response) => {
+    const { pipelineRunId } = req.body as { pipelineRunId?: string };
+    if (!pipelineRunId || typeof pipelineRunId !== 'string') {
+      res.status(400).json({ error: 'pipelineRunId is required' });
+      return;
+    }
+    const run = deps.runner.getPipelineRun(pipelineRunId);
+    if (!run) {
+      res.status(404).json({ error: `Pipeline run "${pipelineRunId}" not found` });
+      return;
+    }
+    if (run.status !== 'running') {
+      res.status(409).json({ error: `Pipeline run is not running (status: ${run.status})` });
+      return;
+    }
+    deps.runner.resumePipelineRun(pipelineRunId);
+    res.json({ ok: true, pipelineRunId });
   });
 
   // GET /api/config

@@ -55,6 +55,13 @@ export default function CommandPalette({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Allow opening from other components via custom event
+  useEffect(() => {
+    function handleOpen() { setOpen(true); }
+    window.addEventListener("open-command-palette", handleOpen);
+    return () => window.removeEventListener("open-command-palette", handleOpen);
+  }, []);
+
   const runAction = useCallback(
     (fn: () => void) => {
       fn();
