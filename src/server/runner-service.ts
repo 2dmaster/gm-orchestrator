@@ -267,7 +267,13 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   function ensureScheduler(): Scheduler {
     if (scheduler) return scheduler;
 
-    scheduler = createScheduler(deps.config, {
+    // Ensure at least as many slots as configured projects so each can run in parallel
+    const effectiveConfig = {
+      ...deps.config,
+      concurrency: Math.max(deps.config.concurrency, deps.config.projects.length, 1),
+    };
+
+    scheduler = createScheduler(effectiveConfig, {
       resolveGm: (projectId) => deps.resolveGm ? deps.resolveGm(projectId) : deps.gm,
       createRunner: (projectId) => deps.config.dryRun ? deps.runner : createStreamingRunner(projectId),
       createPoller: (projectId) => deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller,
