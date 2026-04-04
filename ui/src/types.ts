@@ -39,6 +39,7 @@ export interface Epic {
   priority: TaskPriority;
   tags?: string[];
   tasks?: TaskRef[];
+  progress?: { done: number; total: number };
   createdAt: string;
   updatedAt: string;
 }
@@ -73,7 +74,7 @@ export interface OrchestratorConfig {
 }
 
 export type ServerEvent =
-  | { type: 'run:started';    payload: { mode: 'sprint' | 'epic'; epicId?: string } }
+  | { type: 'run:started';    payload: { mode: 'sprint' | 'epic'; epicId?: string; projectId?: string } }
   | { type: 'run:stopped' }
   | { type: 'run:complete';   payload: SprintStats }
   | { type: 'task:started';   payload: { task: Task } }
@@ -103,6 +104,7 @@ export interface ProjectOverview {
 }
 
 export interface RunSnapshot {
+  projectId: string | null;
   activeTask: Task | null;
   completedTasks: Task[];
   recentLines: string[];

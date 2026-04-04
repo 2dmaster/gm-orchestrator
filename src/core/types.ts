@@ -42,6 +42,7 @@ export interface Epic {
   priority: TaskPriority;
   tags?: string[];
   tasks?: TaskRef[];
+  progress?: { done: number; total: number };
   createdAt: string;
   updatedAt: string;
 }

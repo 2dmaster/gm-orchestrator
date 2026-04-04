@@ -25,6 +25,7 @@ export type RunState = 'idle' | 'running' | 'stopping';
 const MAX_LOG_BUFFER = 200;
 
 export interface RunSnapshot {
+  projectId: string | null;
   activeTask: Task | null;
   completedTasks: Task[];
   recentLines: string[];
@@ -64,6 +65,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   let activeAbort: AbortController | null = null;
   let activeTaskId: string | null = null;
   let runPromise: Promise<SprintStats> | null = null;
+  let activeRunProjectId: string | null = null;
 
   // Run state for late-connecting clients
   let activeTask: Task | null = null;
@@ -74,6 +76,14 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
   function emit(event: ServerEvent): void {
     wsBus.broadcast(event);
+  }
+
+  function resolveGmForProject(projectId: string): GraphMemoryPort {
+    return deps.resolveGm ? deps.resolveGm(projectId) : deps.gm;
+  }
+
+  function resolvePollerForProject(projectId: string): TaskPollerPort {
+    return deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller;
   }
 
   function resetRunState(): void {
@@ -301,6 +311,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
     state = 'running';
     activeAbort = new AbortController();
+    activeRunProjectId = projectId;
     const config: OrchestratorConfig = {
       ...deps.config,
       activeProjectId: projectId,
@@ -313,15 +324,17 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     }
 
     resetRunState();
-    emit({ type: 'run:started', payload: { mode: 'sprint' } });
+    emit({ type: 'run:started', payload: { mode: 'sprint', projectId } });
     logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''})`);
 
+    const gm = resolveGmForProject(projectId);
+    const poller = resolvePollerForProject(projectId);
     const runner = config.dryRun ? deps.runner : createStreamingRunner();
     runPromise = runSprint(
       {
-        gm: deps.gm,
+        gm,
         runner,
-        poller: deps.poller,
+        poller,
         logger: createWsLogger(),
         signal: activeAbort.signal,
       },
@@ -340,6 +353,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       state = 'idle';
       activeAbort = null;
       activeTaskId = null;
+      activeRunProjectId = null;
       runPromise = null;
     }
   }
@@ -351,6 +365,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
     state = 'running';
     activeAbort = new AbortController();
+    activeRunProjectId = projectId;
     const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
     // Ensure the project is in the projects array
     if (!config.projects.some((p) => p.projectId === projectId)) {
@@ -359,16 +374,18 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     }
 
     resetRunState();
-    emit({ type: 'run:started', payload: { mode: 'epic', epicId } });
+    emit({ type: 'run:started', payload: { mode: 'epic', epicId, projectId } });
     logger.section(`Runner: starting epic ${epicId} (project=${projectId})`);
 
+    const gm = resolveGmForProject(projectId);
+    const poller = resolvePollerForProject(projectId);
     const runner = config.dryRun ? deps.runner : createStreamingRunner();
     runPromise = runEpic(
       epicId,
       {
-        gm: deps.gm,
+        gm,
         runner,
-        poller: deps.poller,
+        poller,
         logger: createWsLogger(),
         signal: activeAbort.signal,
       },
@@ -387,6 +404,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       state = 'idle';
       activeAbort = null;
       activeTaskId = null;
+      activeRunProjectId = null;
       runPromise = null;
     }
   }
@@ -398,6 +416,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
     state = 'running';
     activeAbort = new AbortController();
+    activeRunProjectId = projectId;
     const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
     // Ensure the project is in the projects array
     if (!config.projects.some((p) => p.projectId === projectId)) {
@@ -409,13 +428,15 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     emit({ type: 'run:started', payload: { mode: 'sprint', projectId } });
     logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length})`);
 
+    const gm = resolveGmForProject(projectId);
+    const poller = resolvePollerForProject(projectId);
     const runner = config.dryRun ? deps.runner : createStreamingRunner();
     runPromise = runTasks(
       taskIds,
       {
-        gm: deps.gm,
+        gm,
         runner,
-        poller: deps.poller,
+        poller,
         logger: createWsLogger(),
         signal: activeAbort.signal,
       },
@@ -434,6 +455,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       state = 'idle';
       activeAbort = null;
       activeTaskId = null;
+      activeRunProjectId = null;
       runPromise = null;
     }
   }
@@ -575,6 +597,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     },
     getRunSnapshot(): RunSnapshot {
       return {
+        projectId: activeRunProjectId,
         activeTask,
         completedTasks: [...completedTasks],
         recentLines: [...recentLines],

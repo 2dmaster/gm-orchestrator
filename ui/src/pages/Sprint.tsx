@@ -158,7 +158,12 @@ export default function Sprint() {
         const res = await fetch("/api/status");
         if (!res.ok) return;
         const data = (await res.json()) as StatusResponse;
-        if (data.config?.activeProjectId) setProjectId(data.config.activeProjectId);
+        // Prefer the running project from the snapshot; fall back to config
+        if (data.isRunning && data.run?.projectId) {
+          setProjectId(data.run.projectId);
+        } else if (data.config?.activeProjectId) {
+          setProjectId(data.config.activeProjectId);
+        }
 
         // Bootstrap from existing run snapshot
         if (data.isRunning && data.run) {
@@ -206,6 +211,7 @@ export default function Sprint() {
         setCurrentTaskTitle("");
         setWarningCount(0);
         setErrorCount(0);
+        if (evt.payload.projectId) setProjectId(evt.payload.projectId);
         break;
 
       case "task:started": {

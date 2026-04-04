@@ -455,7 +455,16 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
               </div>
             ) : (
               visibleEpics.map((epic) => (
-                <EpicCard key={epic.id} epic={epic} projectId={projectId} />
+                <EpicCard
+                  key={epic.id}
+                  epic={epic}
+                  projectId={projectId}
+                  isSelected={selectedEpicId === epic.id}
+                  onSelect={(id) => {
+                    setSelectedEpicId((prev) => (prev === id ? "" : id));
+                    setShowAllTasks(false);
+                  }}
+                />
               ))
             )}
           </CardContent>
