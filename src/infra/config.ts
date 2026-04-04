@@ -107,6 +107,7 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.discovery !== undefined) result.discovery = cfg.discovery;
     if (cfg.maxTurns !== undefined) result.maxTurns = cfg.maxTurns;
     if (cfg.agentTimeoutMs !== undefined) result.agentTimeoutMs = cfg.agentTimeoutMs;
+    if (cfg.lastRun !== undefined) result.lastRun = cfg.lastRun;
   }
 
   return result;

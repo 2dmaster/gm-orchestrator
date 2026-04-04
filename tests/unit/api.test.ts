@@ -17,6 +17,9 @@ function makeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     maxRetries: 1,
     claudeArgs: [],
     dryRun: false,
+    maxTurns: 200,
+    agentTimeoutMs: 120_000,
+    schedulerStrategy: 'round-robin' as const,
     ...overrides,
   };
 }
@@ -36,6 +39,12 @@ function makeRunner(overrides: Partial<RunnerService> = {}): RunnerService {
     cancelQueued: () => false,
     stopProject: async () => {},
     stop: async () => {},
+    isPaused: false,
+    pause: () => {},
+    resume: () => {},
+    restart: async () => {},
+    hasLastRun: () => false,
+    getLastRun: () => undefined,
     ...overrides,
   };
 }

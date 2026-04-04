@@ -7,6 +7,7 @@ import type {
   SprintStats,
   Task,
   ServerEvent,
+  LastRunState,
 } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
 import { buildPrompt } from '../core/prompt-builder.js';
@@ -48,6 +49,7 @@ export interface RunnerServiceDeps {
   wsBus: WebSocketBus;
   resolveGm?: (projectId: string) => GraphMemoryPort;
   resolvePoller?: (projectId: string) => TaskPollerPort;
+  saveConfig?: (config: Partial<OrchestratorConfig>) => void;
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -308,6 +310,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       },
       onQueueDrained: () => {
         logger.info('Scheduler: all runs complete');
+        clearLastRun();
         emit({ type: 'scheduler:drained' });
       },
     });
@@ -445,19 +448,23 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info(`Runner: stopped project "${projectId}"`);
   }
 
-  // ─── Last-run tracking for restart ─────────────────────────────────────
+  // ─── Last-run persistence for restart across process restarts ──────────
 
-  interface LastRun {
-    projectId: string;
-    mode: 'sprint' | 'epic' | 'tasks';
-    epicId?: string | undefined;
-    taskIds?: string[] | undefined;
-    tag?: string | undefined;
+  function persistLastRun(state: LastRunState | undefined): void {
+    deps.config.lastRun = state;
+    deps.saveConfig?.({ lastRun: state });
   }
-  let lastRun: LastRun | null = null;
 
-  function trackLastRun(r: LastRun): void {
-    lastRun = { ...r };
+  function getPersistedLastRun(): LastRunState | undefined {
+    return deps.config.lastRun;
+  }
+
+  function trackLastRun(r: Omit<LastRunState, 'stoppedAt'>): void {
+    persistLastRun({ ...r, stoppedAt: Date.now() });
+  }
+
+  function clearLastRun(): void {
+    persistLastRun(undefined);
   }
 
   // Patch the existing start* functions to track lastRun
@@ -496,10 +503,11 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
   }
 
   async function restart(): Promise<void> {
-    if (!lastRun) {
+    // Read from persisted config if no in-memory state (process was restarted)
+    const r = getPersistedLastRun();
+    if (!r) {
       throw new Error('Nothing to restart — no previous run recorded');
     }
-    const r = lastRun;
     logger.info(`Runner: restarting last run (${r.mode} project=${r.projectId})`);
     if (r.mode === 'epic' && r.epicId) {
       await wrappedStartEpic(r.projectId, r.epicId);
@@ -508,6 +516,10 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     } else {
       await wrappedStartSprint(r.projectId, r.tag);
     }
+  }
+
+  function hasLastRun(): boolean {
+    return !!getPersistedLastRun();
   }
 
   async function stopAll(): Promise<void> {
@@ -519,6 +531,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     }
     scheduler = null;
     logger.info('Runner: all runs stopped');
+    // lastRun stays persisted — restart will pick it up
   }
 
   return {
@@ -542,5 +555,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     pause,
     resume,
     restart,
+    hasLastRun,
+    getLastRun: getPersistedLastRun,
   };
 }

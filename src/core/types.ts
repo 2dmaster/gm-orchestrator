@@ -122,6 +122,19 @@ export interface OrchestratorConfig {
 
   // Server discovery
   discovery?: DiscoveryConfig;
+
+  // Persisted last run — allows restart/continue after process restart
+  lastRun?: LastRunState | undefined;
+}
+
+/** Persisted in config so restart survives process restarts. */
+export interface LastRunState {
+  projectId: string;
+  mode: 'sprint' | 'epic' | 'tasks';
+  epicId?: string | undefined;
+  taskIds?: string[] | undefined;
+  tag?: string | undefined;
+  stoppedAt: number; // timestamp
 }
 
 /**

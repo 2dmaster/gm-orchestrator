@@ -168,6 +168,7 @@ async function main(): Promise<void> {
       wsBus: { broadcast(e) { wsBusHolder.current.broadcast(e); }, get clientCount() { return wsBusHolder.current.clientCount; }, close() { return wsBusHolder.current.close(); } },
       resolveGm: (projectId) => gmPool.has(projectId) ? gmPool.getClient(projectId) : gmClient,
       resolvePoller: (projectId) => new TaskPoller(gmPool.has(projectId) ? gmPool.getClient(projectId) : gmClient),
+      saveConfig: (partial) => saveConfig(partial),
     });
 
     const apiRouter = createApiRouter({

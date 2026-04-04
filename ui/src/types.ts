@@ -115,6 +115,15 @@ export interface RunSnapshot {
   recentLines: string[];
 }
 
+export interface LastRunState {
+  projectId: string;
+  mode: 'sprint' | 'epic' | 'tasks';
+  epicId?: string;
+  taskIds?: string[];
+  tag?: string;
+  stoppedAt: number;
+}
+
 export interface StatusResponse {
   version: string;
   config: OrchestratorConfig;
@@ -122,6 +131,7 @@ export interface StatusResponse {
   isPaused: boolean;
   runningProjectIds: string[];
   setupRequired: boolean;
+  lastRun: LastRunState | null;
   run?: RunSnapshot;
 }
 

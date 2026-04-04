@@ -29,6 +29,8 @@ export interface RunnerService {
   pause(): void;
   resume(): void;
   restart(): Promise<void>;
+  hasLastRun(): boolean;
+  getLastRun(): import('../core/types.js').LastRunState | undefined;
 }
 
 // ─── Dependencies ───────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ export function createApiRouter(deps: ApiDeps): Router {
       isPaused: deps.runner.isPaused,
       runningProjectIds: deps.runner.getRunningProjectIds(),
       setupRequired: !active?.projectId,
+      lastRun: deps.runner.getLastRun() ?? null,
       ...(snapshot ? { run: snapshot } : {}),
     });
   });
