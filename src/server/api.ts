@@ -14,6 +14,7 @@ import type { GraphMemoryClientPool } from '../infra/gm-client-pool.js';
 
 export interface RunnerService {
   isRunning: boolean;
+  isPaused: boolean;
   getRunningProjectIds(): string[];
   isProjectRunning(projectId: string): boolean;
   getRunSnapshot(): RunSnapshot;
@@ -25,6 +26,9 @@ export interface RunnerService {
   cancelQueued(requestId: string): boolean;
   stopProject(projectId: string): Promise<void>;
   stop(): Promise<void>;
+  pause(): void;
+  resume(): void;
+  restart(): Promise<void>;
 }
 
 // ─── Dependencies ───────────────────────────────────────────────────────
@@ -73,6 +77,7 @@ export function createApiRouter(deps: ApiDeps): Router {
       version: deps.version ?? '2.0.0',
       config: redactedConfig,
       isRunning: deps.runner.isRunning,
+      isPaused: deps.runner.isPaused,
       runningProjectIds: deps.runner.getRunningProjectIds(),
       setupRequired: !active?.projectId,
       ...(snapshot ? { run: snapshot } : {}),
@@ -410,6 +415,45 @@ export function createApiRouter(deps: ApiDeps): Router {
       }
       res.json({ ok: true, projectId: projectId ?? null });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /api/run/pause
+  router.post('/api/run/pause', requireSetup, (_req: Request, res: Response) => {
+    if (!deps.runner.isRunning) {
+      res.status(409).json({ error: 'No run is in progress' });
+      return;
+    }
+    if (deps.runner.isPaused) {
+      res.status(409).json({ error: 'Already paused' });
+      return;
+    }
+    deps.runner.pause();
+    res.json({ ok: true });
+  });
+
+  // POST /api/run/resume
+  router.post('/api/run/resume', requireSetup, (_req: Request, res: Response) => {
+    if (!deps.runner.isPaused) {
+      res.status(409).json({ error: 'Not paused' });
+      return;
+    }
+    deps.runner.resume();
+    res.json({ ok: true });
+  });
+
+  // POST /api/run/restart — restart the last stopped/completed run
+  router.post('/api/run/restart', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      await deps.runner.restart();
+      res.json({ ok: true });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes('Nothing to restart') || msg.includes('already in progress')) {
+        res.status(409).json({ error: msg });
+        return;
+      }
       next(err);
     }
   });

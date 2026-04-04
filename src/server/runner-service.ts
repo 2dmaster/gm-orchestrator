@@ -445,6 +445,71 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     logger.info(`Runner: stopped project "${projectId}"`);
   }
 
+  // ─── Last-run tracking for restart ─────────────────────────────────────
+
+  interface LastRun {
+    projectId: string;
+    mode: 'sprint' | 'epic' | 'tasks';
+    epicId?: string | undefined;
+    taskIds?: string[] | undefined;
+    tag?: string | undefined;
+  }
+  let lastRun: LastRun | null = null;
+
+  function trackLastRun(r: LastRun): void {
+    lastRun = { ...r };
+  }
+
+  // Patch the existing start* functions to track lastRun
+  const _origStartSprint = startSprint;
+  async function wrappedStartSprint(projectId: string, tag?: string): Promise<void> {
+    trackLastRun({ projectId, mode: 'sprint', tag });
+    return _origStartSprint(projectId, tag);
+  }
+
+  const _origStartEpic = startEpic;
+  async function wrappedStartEpic(projectId: string, epicId: string): Promise<void> {
+    trackLastRun({ projectId, mode: 'epic', epicId });
+    return _origStartEpic(projectId, epicId);
+  }
+
+  const _origStartTasks = startTasks;
+  async function wrappedStartTasks(projectId: string, taskIds: string[]): Promise<void> {
+    trackLastRun({ projectId, mode: 'tasks', taskIds });
+    return _origStartTasks(projectId, taskIds);
+  }
+
+  // ─── Pause / Resume / Restart ─────────────────────────────────────────
+
+  function pause(): void {
+    if (!scheduler) return;
+    scheduler.pause();
+    emit({ type: 'run:paused' });
+    logger.info('Runner: paused');
+  }
+
+  function resume(): void {
+    if (!scheduler) return;
+    scheduler.resume();
+    emit({ type: 'run:resumed' });
+    logger.info('Runner: resumed');
+  }
+
+  async function restart(): Promise<void> {
+    if (!lastRun) {
+      throw new Error('Nothing to restart — no previous run recorded');
+    }
+    const r = lastRun;
+    logger.info(`Runner: restarting last run (${r.mode} project=${r.projectId})`);
+    if (r.mode === 'epic' && r.epicId) {
+      await wrappedStartEpic(r.projectId, r.epicId);
+    } else if (r.mode === 'tasks' && r.taskIds) {
+      await wrappedStartTasks(r.projectId, r.taskIds);
+    } else {
+      await wrappedStartSprint(r.projectId, r.tag);
+    }
+  }
+
   async function stopAll(): Promise<void> {
     if (!scheduler) return;
     const runningIds = getRunningProjectIds();
@@ -460,16 +525,22 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     get isRunning() {
       return getRunningProjectIds().length > 0;
     },
+    get isPaused() {
+      return scheduler?.isPaused ?? false;
+    },
     getRunningProjectIds,
     isProjectRunning,
     getRunSnapshot,
     getMultiRunSnapshot,
-    startSprint,
-    startEpic,
-    startTasks,
+    startSprint: wrappedStartSprint,
+    startEpic: wrappedStartEpic,
+    startTasks: wrappedStartTasks,
     startMultiSprint,
     cancelQueued,
     stopProject,
     stop: stopAll,
+    pause,
+    resume,
+    restart,
   };
 }

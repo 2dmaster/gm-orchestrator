@@ -68,6 +68,12 @@ export interface Scheduler {
   /** Stop all running slots and drain the queue. */
   stop(): Promise<void>;
 
+  /** Pause: stop picking new requests from the queue but let running tasks finish. */
+  pause(): void;
+
+  /** Resume after pause: start picking from the queue again. */
+  resume(): void;
+
   /** Cancel a specific queued request (not yet running). Returns true if removed. */
   cancel(requestId: string): boolean;
 
@@ -82,6 +88,9 @@ export interface Scheduler {
 
   /** True if any slot is running or queue is non-empty. */
   readonly isActive: boolean;
+
+  /** True if the scheduler is paused (running tasks continue, queue is frozen). */
+  readonly isPaused: boolean;
 
   /** Get aggregate stats across all completed runs. */
   readonly aggregateStats: SprintStats;
@@ -132,6 +141,7 @@ export function createScheduler(
   }));
 
   let running = false;
+  let paused = false;
   let totalStats: SprintStats = createEmptyStats();
 
   // Track which projects have active slots for round-robin fairness
@@ -187,7 +197,7 @@ export function createScheduler(
   }
 
   function scheduleNext(): void {
-    if (!running) return;
+    if (!running || paused) return;
 
     let idleSlot = findIdleSlot();
     while (idleSlot && requestQueue.length) {
@@ -284,8 +294,22 @@ export function createScheduler(
     scheduleNext();
   }
 
+  function pause(): void {
+    if (!running || paused) return;
+    paused = true;
+    ports.logger.info('Scheduler: paused — running tasks continue, queue frozen');
+  }
+
+  function resume(): void {
+    if (!paused) return;
+    paused = false;
+    ports.logger.info('Scheduler: resumed');
+    scheduleNext();
+  }
+
   async function stop(): Promise<void> {
     running = false;
+    paused = false;
 
     // Abort all running slots
     for (const slot of slots) {
@@ -343,6 +367,8 @@ export function createScheduler(
     enqueue,
     start,
     stop,
+    pause,
+    resume,
     cancel,
     stopProject,
     get queue(): ReadonlyArray<RunRequest> {
@@ -353,6 +379,9 @@ export function createScheduler(
     },
     get isActive(): boolean {
       return running && (requestQueue.length > 0 || slots.some((s) => s.status !== 'idle'));
+    },
+    get isPaused(): boolean {
+      return paused;
     },
     get aggregateStats(): SprintStats {
       return { ...totalStats };

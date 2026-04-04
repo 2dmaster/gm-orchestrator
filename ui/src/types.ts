@@ -92,6 +92,8 @@ export type ServerEvent =
   | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: string } }
   | { type: 'scheduler:slot_completed'; payload: { slotId: number; projectId: string; stats: SprintStats } }
   | { type: 'scheduler:drained' }
+  | { type: 'run:paused' }
+  | { type: 'run:resumed' }
   | { type: 'error';          payload: { message: string; projectId?: string } };
 
 export type ServerEventType = ServerEvent['type'];
@@ -117,6 +119,7 @@ export interface StatusResponse {
   version: string;
   config: OrchestratorConfig;
   isRunning: boolean;
+  isPaused: boolean;
   runningProjectIds: string[];
   setupRequired: boolean;
   run?: RunSnapshot;
