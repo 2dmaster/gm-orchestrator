@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] — 2026-04-04
+
+### Fixed
+- Parallel project runs: scheduler concurrency now auto-scales to the number of configured projects instead of defaulting to 1 slot
+
 ## [0.6.0] — 2026-04-04
 
 ### Added
