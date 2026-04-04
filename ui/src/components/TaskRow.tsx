@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import type { Task } from "../types";
 import PriorityBadge from "./PriorityBadge";
 import StatusBadge from "./StatusBadge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Tooltip,
   TooltipTrigger,
@@ -71,7 +72,14 @@ function TruncatedTitle({ title, className }: { title: string; className?: strin
   );
 }
 
-export default function TaskRow({ task }: { task: Task }) {
+interface TaskRowProps {
+  task: Task;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (taskId: string) => void;
+}
+
+export default function TaskRow({ task, selectable, selected, onToggleSelect }: TaskRowProps) {
   const isRunning = task.status === "in_progress";
   const elapsed = useElapsed(task.updatedAt, isRunning);
 
@@ -86,6 +94,13 @@ export default function TaskRow({ task }: { task: Task }) {
       }`}
       style={{ borderLeftWidth: "3px", borderLeftColor: `var(--priority-${task.priority})` }}
     >
+      {selectable && (
+        <Checkbox
+          checked={selected ?? false}
+          onCheckedChange={() => onToggleSelect?.(task.id)}
+          className="shrink-0"
+        />
+      )}
       <div className="flex-1 min-w-0">
         <TruncatedTitle
           title={task.title}

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { GraphMemoryClient } from '../infra/gm-client.js';
 import { GraphMemoryClientPool } from '../infra/gm-client-pool.js';
 import { ClaudeRunner } from '../infra/claude-runner.js';
@@ -13,6 +16,12 @@ import { createRunnerService } from '../server/runner-service.js';
 import { discoverServers } from '../infra/gm-discovery.js';
 import type { OrchestratorConfig } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
+
+// Read version from package.json once at startup
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf-8')) as { version: string };
+const APP_VERSION = packageJson.version;
 
 // ── Arg parsing ───────────────────────────────────────────────────────────
 
@@ -167,6 +176,7 @@ async function main(): Promise<void> {
       gmPool,
       runner,
       saveConfig: (partial) => saveConfig(partial),
+      version: APP_VERSION,
     });
 
     // Mount API routes before the catch-all static handler

@@ -18,6 +18,7 @@ export interface RunnerService {
   getMultiRunSnapshot(): MultiRunSnapshot;
   startSprint(projectId: string, tag?: string): Promise<void>;
   startEpic(projectId: string, epicId: string): Promise<void>;
+  startTasks(projectId: string, taskIds: string[]): Promise<void>;
   startMultiSprint(projectIds: string[], tag?: string, priority?: string): Promise<string[]>;
   cancelQueued(requestId: string): boolean;
   stop(): Promise<void>;
@@ -358,6 +359,33 @@ export function createApiRouter(deps: ApiDeps): Router {
         deps.logger.error(`Epic run failed: ${(err as Error).message}`);
       });
       res.json({ ok: true, mode: 'epic', projectId, epicId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /api/projects/:projectId/run-tasks — start a run for specific task IDs
+  router.post('/api/projects/:projectId/run-tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = Array.isArray(req.params['projectId']) ? req.params['projectId'][0]! : req.params['projectId']!;
+      const { taskIds } = req.body as { taskIds?: string[] };
+      if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+        res.status(400).json({ error: 'taskIds[] is required and must be a non-empty array' });
+        return;
+      }
+      if (!taskIds.every((id) => typeof id === 'string' && id.length > 0)) {
+        res.status(400).json({ error: 'All taskIds must be non-empty strings' });
+        return;
+      }
+      if (deps.runner.isRunning) {
+        res.status(409).json({ error: 'A run is already in progress' });
+        return;
+      }
+      // Fire and forget — progress is streamed via WebSocket
+      deps.runner.startTasks(projectId, taskIds).catch((err) => {
+        deps.logger.error(`Task run failed: ${(err as Error).message}`);
+      });
+      res.json({ ok: true, mode: 'tasks', projectId, taskIds });
     } catch (err) {
       next(err);
     }

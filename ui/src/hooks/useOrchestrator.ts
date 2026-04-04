@@ -5,6 +5,7 @@ import type { UseWebSocketReturn } from './useWebSocket';
 export interface UseOrchestratorReturn {
   startSprint: (projectId: string, tag?: string) => Promise<void>;
   startEpic: (projectId: string, epicId: string) => Promise<void>;
+  startTasks: (projectId: string, taskIds: string[]) => Promise<void>;
   stop: () => Promise<void>;
   isRunning: boolean;
   status: StatusResponse | null;
@@ -68,9 +69,14 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     setIsRunning(true);
   }, []);
 
+  const startTasks = useCallback(async (projectId: string, taskIds: string[]) => {
+    await post(`/api/projects/${encodeURIComponent(projectId)}/run-tasks`, { taskIds });
+    setIsRunning(true);
+  }, []);
+
   const stop = useCallback(async () => {
     await post('/api/run/stop');
   }, []);
 
-  return { startSprint, startEpic, stop, isRunning, status };
+  return { startSprint, startEpic, startTasks, stop, isRunning, status };
 }

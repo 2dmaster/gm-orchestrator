@@ -14,7 +14,7 @@ import { buildPrompt } from '../core/prompt-builder.js';
 import type { Logger, TaskResultMeta } from '../infra/logger.js';
 import type { WebSocketBus } from './ws.js';
 import type { RunnerService } from './api.js';
-import { runSprint, runEpic } from '../core/orchestrator.js';
+import { runSprint, runEpic, runTasks } from '../core/orchestrator.js';
 import { createScheduler } from '../core/scheduler.js';
 import type { Scheduler, RunRequest } from '../core/scheduler.js';
 
@@ -391,6 +391,53 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     }
   }
 
+  async function startTasks(projectId: string, taskIds: string[]): Promise<void> {
+    if (state !== 'idle') {
+      throw new Error('A run is already in progress');
+    }
+
+    state = 'running';
+    activeAbort = new AbortController();
+    const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
+    // Ensure the project is in the projects array
+    if (!config.projects.some((p) => p.projectId === projectId)) {
+      const base = getActiveProject(deps.config);
+      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
+    }
+
+    resetRunState();
+    emit({ type: 'run:started', payload: { mode: 'sprint', projectId } });
+    logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length})`);
+
+    const runner = config.dryRun ? deps.runner : createStreamingRunner();
+    runPromise = runTasks(
+      taskIds,
+      {
+        gm: deps.gm,
+        runner,
+        poller: deps.poller,
+        logger: createWsLogger(),
+        signal: activeAbort.signal,
+      },
+      config,
+    );
+
+    try {
+      const stats = await runPromise;
+      if ((state as RunState) !== 'stopping') {
+        emit({ type: 'run:complete', payload: stats });
+      }
+    } catch (err) {
+      emit({ type: 'error', payload: { message: (err as Error).message } });
+      throw err;
+    } finally {
+      state = 'idle';
+      activeAbort = null;
+      activeTaskId = null;
+      runPromise = null;
+    }
+  }
+
   async function stop(): Promise<void> {
     if (state !== 'running') {
       return;
@@ -536,6 +583,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     getMultiRunSnapshot,
     startSprint,
     startEpic,
+    startTasks,
     startMultiSprint,
     cancelQueued,
     stop: async () => {

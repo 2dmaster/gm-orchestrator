@@ -165,6 +165,69 @@ export async function runEpic(
   }
 }
 
+/**
+ * Runs a specific set of tasks by ID, in priority order.
+ * Fetches each task, validates it is runnable (todo/in_progress),
+ * then executes them sequentially using the standard runOneTask logic.
+ */
+export async function runTasks(
+  taskIds: string[],
+  ports: Ports,
+  config: OrchestratorConfig
+): Promise<SprintStats> {
+  const { gm, logger } = ports;
+  const startTime = Date.now();
+  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 };
+
+  const failedIds = new Set<string>();
+  const retryCounts = new Map<string, number>();
+
+  logger.section(`Running ${taskIds.length} selected task(s)`);
+
+  // Fetch all tasks and validate
+  const tasks: Task[] = [];
+  for (const taskId of taskIds) {
+    if (ports.signal?.aborted) break;
+    try {
+      const task = await gm.getTask(taskId);
+      if (task.status === 'todo' || task.status === 'in_progress') {
+        tasks.push(task);
+      } else {
+        logger.skip(`Skipping "${task.title}" — status is "${task.status}"`);
+        stats.skipped++;
+      }
+    } catch (err) {
+      logger.error(`Failed to fetch task ${taskId}: ${String(err)}`);
+      stats.errors++;
+    }
+  }
+
+  // Sort by priority
+  const queue = sortByPriority(tasks);
+
+  for (const task of queue) {
+    if (ports.signal?.aborted) {
+      logger.warn('Run aborted');
+      break;
+    }
+
+    if (failedIds.has(task.id)) continue;
+
+    const result = await runOneTask(task, ports, config);
+
+    await handleResult(result, task, {
+      gm, logger, stats, failedIds, retryCounts,
+      maxRetries: config.maxRetries,
+    });
+
+    await sleep(config.pauseMs);
+  }
+
+  stats.durationMs = Date.now() - startTime;
+  logStats(logger, stats);
+  return stats;
+}
+
 // ── Internal ──────────────────────────────────────────────────────────────
 
 /**

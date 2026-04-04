@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen } from "lucide-react";
+import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen, CheckSquare } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
@@ -143,6 +144,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
   const [selectedEpicId, setSelectedEpicId] = useState("");
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [showClosedEpics, setShowClosedEpics] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
 
   const visibleEpics = useMemo(
     () =>
@@ -225,6 +227,44 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
     }
   }, [projectId, selectedEpicId, orchestrator, navigate]);
 
+  // Runnable tasks: only todo or in_progress
+  const runnableTasks = useMemo(
+    () => filteredTasks.filter((t) => t.status === "todo" || t.status === "in_progress"),
+    [filteredTasks]
+  );
+
+  const toggleTaskSelect = useCallback((taskId: string) => {
+    setSelectedTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedTaskIds((prev) => {
+      if (prev.size === runnableTasks.length && runnableTasks.length > 0) {
+        return new Set();
+      }
+      return new Set(runnableTasks.map((t) => t.id));
+    });
+  }, [runnableTasks]);
+
+  const handleRunSelected = useCallback(async () => {
+    if (selectedTaskIds.size === 0) return;
+    try {
+      await orchestrator.startTasks(projectId, [...selectedTaskIds]);
+      setSelectedTaskIds(new Set());
+      navigate("/sprint");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }, [projectId, selectedTaskIds, orchestrator, navigate]);
+
   return (
     <div className="space-y-4 pt-2">
       {/* Action buttons */}
@@ -242,6 +282,18 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
           )}
           Run All Tasks
         </Button>
+        {selectedTaskIds.size > 0 && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleRunSelected}
+            disabled={orchestrator.isRunning}
+            className="gap-1.5"
+          >
+            <CheckSquare className="w-3.5 h-3.5" />
+            Run Selected ({selectedTaskIds.size})
+          </Button>
+        )}
         {visibleEpics.length > 0 && (
           <div className="flex items-center gap-1.5">
             <Select
@@ -281,26 +333,42 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
         {/* Tasks */}
         <Card className="lg:col-span-2">
           <CardHeader className="pb-3 flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
-              Tasks
-              {selectedEpicId && (
-                <span className="ml-2 text-xs font-normal normal-case tracking-normal">
-                  ({filteredTasks.length} of {tasks.length})
+            <div className="flex items-center gap-3">
+              {runnableTasks.length > 0 && (
+                <Checkbox
+                  checked={selectedTaskIds.size === runnableTasks.length && runnableTasks.length > 0}
+                  indeterminate={selectedTaskIds.size > 0 && selectedTaskIds.size < runnableTasks.length}
+                  onCheckedChange={toggleSelectAll}
+                />
+              )}
+              <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                Tasks
+                {selectedEpicId && (
+                  <span className="ml-2 text-xs font-normal normal-case tracking-normal">
+                    ({filteredTasks.length} of {tasks.length})
+                  </span>
+                )}
+              </CardTitle>
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedTaskIds.size > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {selectedTaskIds.size} selected
                 </span>
               )}
-            </CardTitle>
-            {selectedEpicId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedEpicId("");
-                  setShowAllTasks(false);
-                }}
-                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Clear filter
-              </button>
-            )}
+              {selectedEpicId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedEpicId("");
+                    setShowAllTasks(false);
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Clear filter
+                </button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-2">
             {tasksLoading && tasks.length === 0 ? (
@@ -322,9 +390,18 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
               </div>
             ) : (
               <>
-                {visibleTasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
-                ))}
+                {visibleTasks.map((task) => {
+                  const isRunnable = task.status === "todo" || task.status === "in_progress";
+                  return (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      selectable={isRunnable}
+                      selected={selectedTaskIds.has(task.id)}
+                      onToggleSelect={toggleTaskSelect}
+                    />
+                  );
+                })}
                 {!showAllTasks && hiddenCount > 0 && (
                   <button
                     type="button"

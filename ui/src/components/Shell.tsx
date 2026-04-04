@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useLocation, Link } from "react-router-dom";
 import { LayoutDashboard, Play, Settings, Hexagon, Command } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
@@ -16,6 +17,20 @@ interface ShellProps {
 
 export default function Shell({ projectId, taskCount, children }: ShellProps) {
   const location = useLocation();
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) return;
+        const data = (await res.json()) as { version?: string };
+        if (data.version) setVersion(data.version);
+      } catch {
+        // Server may not be ready
+      }
+    })();
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -60,9 +75,14 @@ export default function Shell({ projectId, taskCount, children }: ShellProps) {
               <p className="text-[10px] text-muted-foreground">{taskCount} tasks</p>
             </div>
           )}
-          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            <Command className="w-3 h-3" />
-            <span>Cmd+K</span>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+            <div className="flex items-center gap-1.5">
+              <Command className="w-3 h-3" />
+              <span>Cmd+K</span>
+            </div>
+            {version && (
+              <span className="font-mono opacity-60">v{version}</span>
+            )}
           </div>
         </div>
       </aside>
