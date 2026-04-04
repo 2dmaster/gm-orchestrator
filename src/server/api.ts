@@ -14,6 +14,8 @@ import type { GraphMemoryClientPool } from '../infra/gm-client-pool.js';
 
 export interface RunnerService {
   isRunning: boolean;
+  getRunningProjectIds(): string[];
+  isProjectRunning(projectId: string): boolean;
   getRunSnapshot(): RunSnapshot;
   getMultiRunSnapshot(): MultiRunSnapshot;
   startSprint(projectId: string, tag?: string): Promise<void>;
@@ -21,6 +23,7 @@ export interface RunnerService {
   startTasks(projectId: string, taskIds: string[]): Promise<void>;
   startMultiSprint(projectIds: string[], tag?: string, priority?: string): Promise<string[]>;
   cancelQueued(requestId: string): boolean;
+  stopProject(projectId: string): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -63,7 +66,6 @@ export function createApiRouter(deps: ApiDeps): Router {
   // GET /api/status
   router.get('/api/status', (_req: Request, res: Response) => {
     const active = getActiveProject(deps.config);
-    // Redact apiKey from each project entry
     const redactedProjects = deps.config.projects.map(({ apiKey: _k, ...rest }) => rest);
     const redactedConfig = { ...deps.config, projects: redactedProjects };
     const snapshot = deps.runner.isRunning ? deps.runner.getRunSnapshot() : null;
@@ -71,6 +73,7 @@ export function createApiRouter(deps: ApiDeps): Router {
       version: deps.version ?? '2.0.0',
       config: redactedConfig,
       isRunning: deps.runner.isRunning,
+      runningProjectIds: deps.runner.getRunningProjectIds(),
       setupRequired: !active?.projectId,
       ...(snapshot ? { run: snapshot } : {}),
     });
@@ -276,11 +279,10 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(400).json({ error: 'projectId is required' });
         return;
       }
-      if (deps.runner.isRunning) {
-        res.status(409).json({ error: 'A run is already in progress' });
+      if (deps.runner.isProjectRunning(projectId)) {
+        res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
-      // Fire and forget — progress is streamed via WebSocket
       deps.runner.startSprint(projectId, tag).catch((err) => {
         deps.logger.error(`Sprint run failed: ${(err as Error).message}`);
       });
@@ -335,11 +337,10 @@ export function createApiRouter(deps: ApiDeps): Router {
   // GET /api/run/status — get scheduler status (multi-run snapshot)
   router.get('/api/run/status', requireSetup, (_req: Request, res: Response) => {
     const snapshot = deps.runner.getMultiRunSnapshot();
-    const singleSnapshot = deps.runner.isRunning ? deps.runner.getRunSnapshot() : null;
     res.json({
       isRunning: deps.runner.isRunning,
+      runningProjectIds: deps.runner.getRunningProjectIds(),
       scheduler: snapshot,
-      ...(singleSnapshot ? { current: singleSnapshot } : {}),
     });
   });
 
@@ -351,8 +352,8 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(400).json({ error: 'projectId and epicId are required' });
         return;
       }
-      if (deps.runner.isRunning) {
-        res.status(409).json({ error: 'A run is already in progress' });
+      if (deps.runner.isProjectRunning(projectId)) {
+        res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
       deps.runner.startEpic(projectId, epicId).catch((err) => {
@@ -377,11 +378,10 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(400).json({ error: 'All taskIds must be non-empty strings' });
         return;
       }
-      if (deps.runner.isRunning) {
-        res.status(409).json({ error: 'A run is already in progress' });
+      if (deps.runner.isProjectRunning(projectId)) {
+        res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
-      // Fire and forget — progress is streamed via WebSocket
       deps.runner.startTasks(projectId, taskIds).catch((err) => {
         deps.logger.error(`Task run failed: ${(err as Error).message}`);
       });
@@ -392,14 +392,23 @@ export function createApiRouter(deps: ApiDeps): Router {
   });
 
   // POST /api/run/stop
-  router.post('/api/run/stop', requireSetup, async (_req: Request, res: Response, next: NextFunction) => {
+  router.post('/api/run/stop', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (!deps.runner.isRunning) {
-        res.status(409).json({ error: 'No run is in progress' });
-        return;
+      const { projectId } = req.body as { projectId?: string };
+      if (projectId) {
+        if (!deps.runner.isProjectRunning(projectId)) {
+          res.status(409).json({ error: `No run is in progress for project "${projectId}"` });
+          return;
+        }
+        await deps.runner.stopProject(projectId);
+      } else {
+        if (!deps.runner.isRunning) {
+          res.status(409).json({ error: 'No run is in progress' });
+          return;
+        }
+        await deps.runner.stop();
       }
-      await deps.runner.stop();
-      res.json({ ok: true });
+      res.json({ ok: true, projectId: projectId ?? null });
     } catch (err) {
       next(err);
     }

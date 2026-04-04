@@ -69,10 +69,11 @@ interface ProjectCardProps {
   project: ProjectOverview;
   isSelected: boolean;
   isExpanded: boolean;
+  isRunning: boolean;
   onSelect: () => void;
 }
 
-function ProjectCard({ project, isSelected, isExpanded, onSelect }: ProjectCardProps) {
+function ProjectCard({ project, isSelected, isExpanded, isRunning, onSelect }: ProjectCardProps) {
   const { taskCounts, epicCount } = project;
   const label = project.label || project.projectId;
 
@@ -100,6 +101,9 @@ function ProjectCard({ project, isSelected, isExpanded, onSelect }: ProjectCardP
             </p>
           </div>
         </div>
+        {isRunning && (
+          <div className="w-2.5 h-2.5 rounded-full bg-primary shrink-0 ml-2 animate-pulse" />
+        )}
         {project.error && (
           <AlertCircle className="w-4 h-4 text-destructive shrink-0 ml-2" />
         )}
@@ -272,10 +276,10 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
         <Button
           size="sm"
           onClick={handleRunSprint}
-          disabled={orchestrator.isRunning}
+          disabled={orchestrator.isProjectRunning(projectId)}
           className="gap-1.5"
         >
-          {orchestrator.isRunning ? (
+          {orchestrator.isProjectRunning(projectId) ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
           ) : (
             <Play className="w-3.5 h-3.5" />
@@ -287,7 +291,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
             size="sm"
             variant="secondary"
             onClick={handleRunSelected}
-            disabled={orchestrator.isRunning}
+            disabled={orchestrator.isProjectRunning(projectId)}
             className="gap-1.5"
           >
             <CheckSquare className="w-3.5 h-3.5" />
@@ -303,7 +307,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
                 setSelectedEpicId(val ?? "");
                 setShowAllTasks(false);
               }}
-              disabled={orchestrator.isRunning || epicsLoading}
+              disabled={orchestrator.isProjectRunning(projectId) || epicsLoading}
             >
               <SelectTrigger size="sm" className="text-xs font-mono min-w-[140px]">
                 <SelectValue placeholder="Select epic..." />
@@ -320,7 +324,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
               size="sm"
               variant="secondary"
               onClick={handleRunEpic}
-              disabled={!selectedEpicId || orchestrator.isRunning}
+              disabled={!selectedEpicId || orchestrator.isProjectRunning(projectId)}
               className="text-xs"
             >
               Run Epic
@@ -706,6 +710,7 @@ export default function Dashboard() {
                       project={project}
                       isSelected={expandedProjectId === project.projectId}
                       isExpanded={expandedProjectId === project.projectId}
+                      isRunning={orchestrator.isProjectRunning(project.projectId)}
                       onSelect={() => handleSelectProject(project.projectId)}
                     />
                   ))}

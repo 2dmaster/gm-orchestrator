@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] — 2026-04-04
+
+### Added
+- Per-project concurrent runs: starting a run for one project no longer blocks other projects
+- Runs page with sidebar showing all active/completed runs per project, click to see details
+- Per-project stop: stop a single project's run without affecting others
+- `tasks` mode in scheduler: selective task runs now go through the concurrent scheduler
+- Per-slot logger: each concurrent run emits events tagged with its projectId
+- Running indicator (pulsing dot) on project cards in Dashboard
+
+### Changed
+- All runs (sprint, epic, tasks) now route through the unified scheduler instead of single-run state
+- Dashboard controls disabled per-project instead of globally
+- API endpoints use per-project blocking (`isProjectRunning`) instead of global `isRunning`
+- `POST /api/run/stop` accepts optional `{ projectId }` for per-project stop
+- `GET /api/status` returns `runningProjectIds: string[]`
+- All WebSocket events consistently include `projectId` in payloads
+- `run:stopped` event now includes `{ projectId }` payload
+
+### Removed
+- Global single-run state (`state: RunState`, `activeAbort`, etc.) in runner-service — replaced by scheduler slots
+
 ## [0.5.1] — 2026-04-04
 
 ### Fixed

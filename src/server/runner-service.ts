@@ -7,20 +7,16 @@ import type {
   SprintStats,
   Task,
   ServerEvent,
-  ProjectEntry,
 } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
 import { buildPrompt } from '../core/prompt-builder.js';
 import type { Logger, TaskResultMeta } from '../infra/logger.js';
 import type { WebSocketBus } from './ws.js';
 import type { RunnerService } from './api.js';
-import { runSprint, runEpic, runTasks } from '../core/orchestrator.js';
 import { createScheduler } from '../core/scheduler.js';
-import type { Scheduler, RunRequest } from '../core/scheduler.js';
+import type { Scheduler } from '../core/scheduler.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────
-
-export type RunState = 'idle' | 'running' | 'stopping';
 
 const MAX_LOG_BUFFER = 200;
 
@@ -61,125 +57,87 @@ function truncate(str: string, maxLen: number): string {
 // ─── Implementation ──────────────────────────────────────────────────────
 
 export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
-  let state: RunState = 'idle';
-  let activeAbort: AbortController | null = null;
-  let activeTaskId: string | null = null;
-  let runPromise: Promise<SprintStats> | null = null;
-  let activeRunProjectId: string | null = null;
-
-  // Run state for late-connecting clients
-  let activeTask: Task | null = null;
-  let completedTasks: Task[] = [];
-  let recentLines: string[] = [];
-
   const { logger, wsBus } = deps;
 
   function emit(event: ServerEvent): void {
     wsBus.broadcast(event);
   }
 
-  function resolveGmForProject(projectId: string): GraphMemoryPort {
-    return deps.resolveGm ? deps.resolveGm(projectId) : deps.gm;
-  }
-
-  function resolvePollerForProject(projectId: string): TaskPollerPort {
-    return deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller;
-  }
-
-  function resetRunState(): void {
-    activeTask = null;
-    completedTasks = [];
-    recentLines = [];
-  }
-
-  function pushLogLine(line: string): void {
-    recentLines.push(line);
-    if (recentLines.length > MAX_LOG_BUFFER) {
-      recentLines = recentLines.slice(-MAX_LOG_BUFFER);
-    }
-  }
-
-  // Wrap the orchestrator logger to intercept events and forward to WS
-  function createWsLogger(): Logger {
+  // Wrap the orchestrator logger to intercept events and forward to WS.
+  // Each logger is scoped to a projectId so concurrent runs emit correctly tagged events.
+  function createWsLogger(projectId: string): Logger {
     return {
       info: (msg) => logger.info(msg),
       success: (msg) => logger.success(msg),
       warn: (msg) => logger.warn(msg),
       error: (msg) => {
         logger.error(msg);
-        emit({ type: 'error', payload: { message: msg } });
+        emit({ type: 'error', payload: { message: msg, projectId } });
       },
       skip: (msg) => logger.skip(msg),
       section: (msg) => logger.section(msg),
       task: (task) => {
         logger.task(task);
-        activeTaskId = task.id;
-        activeTask = task;
-        recentLines = [];
-        emit({ type: 'task:started', payload: { task } });
+        emit({ type: 'task:started', payload: { task, projectId } });
       },
       taskResult: (task: Task, result, meta?: TaskResultMeta) => {
         logger.taskResult(task, result, meta);
-        // Retrying — task will be picked up again
         if (meta?.attempt) {
-          emit({ type: 'task:retrying', payload: { task, attempt: meta.attempt } });
+          emit({ type: 'task:retrying', payload: { task, attempt: meta.attempt, projectId } });
           return;
         }
-        // Terminal states
         const finishedTask = { ...task };
-        activeTask = null;
         switch (result) {
           case 'done':
           case 'dry_run':
             finishedTask.status = 'done';
-            completedTasks.push(finishedTask);
-            emit({ type: 'task:done', payload: { task: finishedTask } });
+            emit({ type: 'task:done', payload: { task: finishedTask, projectId } });
             break;
           case 'cancelled':
             finishedTask.status = 'cancelled';
-            completedTasks.push(finishedTask);
-            emit({ type: 'task:cancelled', payload: { task: finishedTask } });
+            emit({ type: 'task:cancelled', payload: { task: finishedTask, projectId } });
             break;
           case 'timeout':
-            completedTasks.push(finishedTask);
-            emit({ type: 'task:timeout', payload: { task: finishedTask } });
+            emit({ type: 'task:timeout', payload: { task: finishedTask, projectId } });
             break;
         }
       },
     };
   }
 
-  // Wraps the Agent SDK to stream structured events and emit log:line for backward compat.
-  // In dry-run mode the orchestrator skips runner.run(), so this is safe.
-  function createStreamingRunner(): ClaudeRunnerPort {
+  // Wraps the Agent SDK to stream structured events.
+  // Scoped to a projectId for correct event tagging.
+  function createStreamingRunner(projectId: string): ClaudeRunnerPort {
     return {
       async run(task: Task, config: OrchestratorConfig): Promise<void> {
         const active = getActiveProject(config);
-        const projectId = active?.projectId ?? '';
-        const prompt = buildPrompt(task, { projectId });
+        const pid = active?.projectId ?? projectId;
+        const prompt = buildPrompt(task, { projectId: pid });
 
-        // Build MCP server config for GraphMemory access
         const mcpBaseUrl = active?.baseUrl ?? 'http://localhost:3000';
         const mcpServers: Record<string, { command: string; args: string[] }> = {
           'graph-memory': {
             command: 'npx',
-            args: ['-y', 'mcp-remote', `${mcpBaseUrl}/mcp/${projectId}`],
+            args: ['-y', 'mcp-remote', `${mcpBaseUrl}/mcp/${pid}`],
           },
         };
 
-        const abortSignal = activeAbort?.signal;
         let turnCount = 0;
 
-        // Inactivity watchdog: abort if no SDK events for agentTimeoutMs
+        // Inactivity watchdog
         let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
         let watchdogWarned = false;
         const watchdogMs = config.agentTimeoutMs;
         const warningMs = Math.max(Math.floor(watchdogMs * 0.6), 30_000);
 
+        // Find the abort controller for this project's slot
+        const slotAbort = scheduler?.slots.find(
+          (s) => s.status === 'running' && s.projectId === pid,
+        )?.abort;
+
         function resetWatchdog(): void {
           watchdogWarned = false;
           if (watchdogTimer) clearTimeout(watchdogTimer);
-          // First fire a warning at 60% of timeout, then abort at 100%
           watchdogTimer = setTimeout(() => {
             if (!watchdogWarned) {
               watchdogWarned = true;
@@ -188,18 +146,19 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
                 payload: {
                   taskId: task.id,
                   message: `No agent activity for ${Math.round(warningMs / 1000)}s — may be stuck`,
+                  projectId: pid,
                 },
               });
-              // Set final abort timer for the remaining time
               watchdogTimer = setTimeout(() => {
                 emit({
                   type: 'agent:warning',
                   payload: {
                     taskId: task.id,
                     message: `Agent inactive for ${Math.round(watchdogMs / 1000)}s — aborting task`,
+                    projectId: pid,
                   },
                 });
-                activeAbort?.abort();
+                slotAbort?.abort();
               }, watchdogMs - warningMs);
             }
           }, warningMs);
@@ -217,23 +176,21 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
             maxTurns: config.maxTurns,
             mcpServers,
             settingSources: ['project'],
-            ...(abortSignal ? { abortSignal } : {}),
+            ...(slotAbort?.signal ? { abortSignal: slotAbort.signal } : {}),
           },
         })) {
           resetWatchdog();
           const msg = message as Record<string, unknown>;
           const msgType = msg.type as string | undefined;
 
-          // ── Result (final message) ──
           if (msgType === 'result') {
             const line = msg.result as string;
             if (line) {
-              pushLogLine(line);
-              emit({ type: 'log:line', payload: { taskId: task.id, line } });
+              emit({ type: 'log:line', payload: { taskId: task.id, line, projectId: pid } });
             }
             const numTurns = msg.num_turns as number | undefined;
             if (numTurns) {
-              emit({ type: 'agent:turn', payload: { taskId: task.id, turn: numTurns } });
+              emit({ type: 'agent:turn', payload: { taskId: task.id, turn: numTurns, projectId: pid } });
             }
             const usage = msg.usage as Record<string, number> | undefined;
             emit({
@@ -243,19 +200,19 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
                 costUsd: (msg.total_cost_usd as number) ?? 0,
                 inputTokens: usage?.input_tokens ?? 0,
                 outputTokens: usage?.output_tokens ?? 0,
+                projectId: pid,
               },
             });
             continue;
           }
 
-          // ── Assistant message (tool calls, text, thinking) ──
           if (msgType === 'assistant') {
             const assistantMsg = msg.message as Record<string, unknown> | undefined;
             const content = assistantMsg?.content as Array<Record<string, unknown>> | undefined;
             if (!content) continue;
 
             turnCount++;
-            emit({ type: 'agent:turn', payload: { taskId: task.id, turn: turnCount } });
+            emit({ type: 'agent:turn', payload: { taskId: task.id, turn: turnCount, projectId: pid } });
 
             for (const block of content) {
               const blockType = block.type as string;
@@ -263,26 +220,23 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
               if (blockType === 'tool_use') {
                 const toolName = (block.name as string) ?? 'unknown';
                 const toolInput = truncate(JSON.stringify(block.input ?? ''), 500);
-                emit({ type: 'agent:tool_start', payload: { taskId: task.id, tool: toolName, input: toolInput } });
-                pushLogLine(`[tool] ${toolName}: ${toolInput}`);
-                emit({ type: 'log:line', payload: { taskId: task.id, line: `[tool] ${toolName}: ${toolInput}` } });
+                emit({ type: 'agent:tool_start', payload: { taskId: task.id, tool: toolName, input: toolInput, projectId: pid } });
+                emit({ type: 'log:line', payload: { taskId: task.id, line: `[tool] ${toolName}: ${toolInput}`, projectId: pid } });
               } else if (blockType === 'text') {
                 const text = (block.text as string) ?? '';
                 if (text) {
-                  pushLogLine(text);
-                  emit({ type: 'log:line', payload: { taskId: task.id, line: text } });
+                  emit({ type: 'log:line', payload: { taskId: task.id, line: text, projectId: pid } });
                 }
               } else if (blockType === 'thinking') {
                 const text = (block.thinking as string) ?? '';
                 if (text) {
-                  emit({ type: 'agent:thinking', payload: { taskId: task.id, text: truncate(text, 300) } });
+                  emit({ type: 'agent:thinking', payload: { taskId: task.id, text: truncate(text, 300), projectId: pid } });
                 }
               }
             }
             continue;
           }
 
-          // ── User message (tool results) ──
           if (msgType === 'user') {
             const userMsg = msg.message as Record<string, unknown> | undefined;
             const content = userMsg?.content as Array<Record<string, unknown>> | undefined;
@@ -291,7 +245,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
             for (const block of content) {
               if (block.type === 'tool_result') {
                 const toolOutput = truncate(JSON.stringify(block.content ?? ''), 500);
-                emit({ type: 'agent:tool_end', payload: { taskId: task.id, tool: 'result', output: toolOutput } });
+                emit({ type: 'agent:tool_end', payload: { taskId: task.id, tool: 'result', output: toolOutput, projectId: pid } });
               }
             }
             continue;
@@ -304,188 +258,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     };
   }
 
-  async function startSprint(projectId: string, tag?: string): Promise<void> {
-    if (state !== 'idle') {
-      throw new Error('A run is already in progress');
-    }
-
-    state = 'running';
-    activeAbort = new AbortController();
-    activeRunProjectId = projectId;
-    const config: OrchestratorConfig = {
-      ...deps.config,
-      activeProjectId: projectId,
-      ...(tag !== undefined ? { tag } : {}),
-    };
-    // Ensure the project is in the projects array
-    if (!config.projects.some((p) => p.projectId === projectId)) {
-      const base = getActiveProject(deps.config);
-      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
-    }
-
-    resetRunState();
-    emit({ type: 'run:started', payload: { mode: 'sprint', projectId } });
-    logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''})`);
-
-    const gm = resolveGmForProject(projectId);
-    const poller = resolvePollerForProject(projectId);
-    const runner = config.dryRun ? deps.runner : createStreamingRunner();
-    runPromise = runSprint(
-      {
-        gm,
-        runner,
-        poller,
-        logger: createWsLogger(),
-        signal: activeAbort.signal,
-      },
-      config,
-    );
-
-    try {
-      const stats = await runPromise;
-      if ((state as RunState) !== 'stopping') {
-        emit({ type: 'run:complete', payload: stats });
-      }
-    } catch (err) {
-      emit({ type: 'error', payload: { message: (err as Error).message } });
-      throw err;
-    } finally {
-      state = 'idle';
-      activeAbort = null;
-      activeTaskId = null;
-      activeRunProjectId = null;
-      runPromise = null;
-    }
-  }
-
-  async function startEpic(projectId: string, epicId: string): Promise<void> {
-    if (state !== 'idle') {
-      throw new Error('A run is already in progress');
-    }
-
-    state = 'running';
-    activeAbort = new AbortController();
-    activeRunProjectId = projectId;
-    const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
-    // Ensure the project is in the projects array
-    if (!config.projects.some((p) => p.projectId === projectId)) {
-      const base = getActiveProject(deps.config);
-      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
-    }
-
-    resetRunState();
-    emit({ type: 'run:started', payload: { mode: 'epic', epicId, projectId } });
-    logger.section(`Runner: starting epic ${epicId} (project=${projectId})`);
-
-    const gm = resolveGmForProject(projectId);
-    const poller = resolvePollerForProject(projectId);
-    const runner = config.dryRun ? deps.runner : createStreamingRunner();
-    runPromise = runEpic(
-      epicId,
-      {
-        gm,
-        runner,
-        poller,
-        logger: createWsLogger(),
-        signal: activeAbort.signal,
-      },
-      config,
-    );
-
-    try {
-      const stats = await runPromise;
-      if ((state as RunState) !== 'stopping') {
-        emit({ type: 'run:complete', payload: stats });
-      }
-    } catch (err) {
-      emit({ type: 'error', payload: { message: (err as Error).message } });
-      throw err;
-    } finally {
-      state = 'idle';
-      activeAbort = null;
-      activeTaskId = null;
-      activeRunProjectId = null;
-      runPromise = null;
-    }
-  }
-
-  async function startTasks(projectId: string, taskIds: string[]): Promise<void> {
-    if (state !== 'idle') {
-      throw new Error('A run is already in progress');
-    }
-
-    state = 'running';
-    activeAbort = new AbortController();
-    activeRunProjectId = projectId;
-    const config: OrchestratorConfig = { ...deps.config, activeProjectId: projectId };
-    // Ensure the project is in the projects array
-    if (!config.projects.some((p) => p.projectId === projectId)) {
-      const base = getActiveProject(deps.config);
-      config.projects = [...config.projects, { baseUrl: base?.baseUrl ?? 'http://localhost:3000', projectId }];
-    }
-
-    resetRunState();
-    emit({ type: 'run:started', payload: { mode: 'sprint', projectId } });
-    logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length})`);
-
-    const gm = resolveGmForProject(projectId);
-    const poller = resolvePollerForProject(projectId);
-    const runner = config.dryRun ? deps.runner : createStreamingRunner();
-    runPromise = runTasks(
-      taskIds,
-      {
-        gm,
-        runner,
-        poller,
-        logger: createWsLogger(),
-        signal: activeAbort.signal,
-      },
-      config,
-    );
-
-    try {
-      const stats = await runPromise;
-      if ((state as RunState) !== 'stopping') {
-        emit({ type: 'run:complete', payload: stats });
-      }
-    } catch (err) {
-      emit({ type: 'error', payload: { message: (err as Error).message } });
-      throw err;
-    } finally {
-      state = 'idle';
-      activeAbort = null;
-      activeTaskId = null;
-      activeRunProjectId = null;
-      runPromise = null;
-    }
-  }
-
-  async function stop(): Promise<void> {
-    if (state !== 'running') {
-      return;
-    }
-
-    state = 'stopping';
-    logger.warn('Runner: stop requested');
-
-    if (activeAbort) {
-      activeAbort.abort();
-    }
-
-    // Wait for the current run to wind down
-    if (runPromise) {
-      try {
-        await runPromise;
-      } catch {
-        // Expected — run may throw when aborted
-      }
-    }
-
-    emit({ type: 'run:stopped' });
-    logger.info('Runner: stopped');
-  }
-
-  // ─── Multi-project scheduler ───────────────────────────────────────────
+  // ─── Scheduler (unified run engine) ────────────────────────────────────
 
   let scheduler: Scheduler | null = null;
 
@@ -496,12 +269,17 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
 
     scheduler = createScheduler(deps.config, {
       resolveGm: (projectId) => deps.resolveGm ? deps.resolveGm(projectId) : deps.gm,
-      createRunner: (_projectId) => deps.config.dryRun ? deps.runner : createStreamingRunner(),
+      createRunner: (projectId) => deps.config.dryRun ? deps.runner : createStreamingRunner(projectId),
       createPoller: (projectId) => deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller,
-      logger: createWsLogger(),
+      logger: createWsLogger(''),
+      createLogger: (projectId) => createWsLogger(projectId),
     }, {
       onSlotStarted: (slotId, request) => {
         logger.info(`Scheduler: slot ${slotId} started ${request.mode} for project "${request.projectId}"`);
+        emit({
+          type: 'run:started',
+          payload: { mode: request.mode, projectId: request.projectId, ...(request.epicId ? { epicId: request.epicId } : {}) },
+        });
         emit({
           type: 'scheduler:slot_started',
           payload: { slotId, projectId: request.projectId, mode: request.mode },
@@ -509,6 +287,10 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       },
       onSlotCompleted: (slotId, request, stats) => {
         logger.info(`Scheduler: slot ${slotId} completed for project "${request.projectId}"`);
+        emit({
+          type: 'run:complete',
+          payload: { ...stats, projectId: request.projectId },
+        });
         emit({
           type: 'scheduler:slot_completed',
           payload: { slotId, projectId: request.projectId, stats },
@@ -521,12 +303,59 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       onQueueDrained: () => {
         logger.info('Scheduler: all runs complete');
         emit({ type: 'scheduler:drained' });
-        state = 'idle';
-        scheduler = null;
       },
     });
 
     return scheduler;
+  }
+
+  // ─── Public API ────────────────────────────────────────────────────────
+
+  function getRunningProjectIds(): string[] {
+    if (!scheduler) return [];
+    return scheduler.slots
+      .filter((s) => s.status === 'running' && s.projectId)
+      .map((s) => s.projectId!);
+  }
+
+  function isProjectRunning(projectId: string): boolean {
+    if (!scheduler) return false;
+    return scheduler.slots.some(
+      (s) => s.status === 'running' && s.projectId === projectId,
+    );
+  }
+
+  async function startSprint(projectId: string, tag?: string): Promise<void> {
+    if (isProjectRunning(projectId)) {
+      throw new Error(`A run is already in progress for project "${projectId}"`);
+    }
+
+    logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''})`);
+    const sched = ensureScheduler();
+    sched.enqueue({ projectId, mode: 'sprint', tag, priority: PRIORITY_MAP['medium']! });
+    sched.start();
+  }
+
+  async function startEpic(projectId: string, epicId: string): Promise<void> {
+    if (isProjectRunning(projectId)) {
+      throw new Error(`A run is already in progress for project "${projectId}"`);
+    }
+
+    logger.section(`Runner: starting epic ${epicId} (project=${projectId})`);
+    const sched = ensureScheduler();
+    sched.enqueue({ projectId, mode: 'epic', epicId, priority: PRIORITY_MAP['medium']! });
+    sched.start();
+  }
+
+  async function startTasks(projectId: string, taskIds: string[]): Promise<void> {
+    if (isProjectRunning(projectId)) {
+      throw new Error(`A run is already in progress for project "${projectId}"`);
+    }
+
+    logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length})`);
+    const sched = ensureScheduler();
+    sched.enqueue({ projectId, mode: 'tasks', taskIds, priority: PRIORITY_MAP['medium']! });
+    sched.start();
   }
 
   async function startMultiSprint(
@@ -534,11 +363,6 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     tag?: string,
     priority?: string,
   ): Promise<string[]> {
-    if (state !== 'idle' && !scheduler) {
-      throw new Error('A run is already in progress');
-    }
-
-    state = 'running';
     const sched = ensureScheduler();
     const priorityNum = PRIORITY_MAP[priority ?? 'medium'] ?? 2;
 
@@ -586,36 +410,60 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     };
   }
 
+  // Backward-compat snapshot: returns the first active slot's data
+  function getRunSnapshot(): RunSnapshot {
+    if (!scheduler) {
+      return { projectId: null, activeTask: null, completedTasks: [], recentLines: [] };
+    }
+    const activeSlot = scheduler.slots.find((s) => s.status === 'running');
+    if (!activeSlot) {
+      return { projectId: null, activeTask: null, completedTasks: [], recentLines: [] };
+    }
+    return {
+      projectId: activeSlot.projectId,
+      activeTask: activeSlot.activeTask,
+      completedTasks: [...activeSlot.completedTasks],
+      recentLines: [...activeSlot.recentLines],
+    };
+  }
+
   function cancelQueued(requestId: string): boolean {
     if (!scheduler) return false;
     return scheduler.cancel(requestId);
   }
 
+  async function stopProject(projectId: string): Promise<void> {
+    if (!scheduler) return;
+    await scheduler.stopProject(projectId);
+    emit({ type: 'run:stopped', payload: { projectId } });
+    logger.info(`Runner: stopped project "${projectId}"`);
+  }
+
+  async function stopAll(): Promise<void> {
+    if (!scheduler) return;
+    const runningIds = getRunningProjectIds();
+    await scheduler.stop();
+    for (const pid of runningIds) {
+      emit({ type: 'run:stopped', payload: { projectId: pid } });
+    }
+    scheduler = null;
+    logger.info('Runner: all runs stopped');
+  }
+
   return {
     get isRunning() {
-      return state !== 'idle';
+      return getRunningProjectIds().length > 0;
     },
-    getRunSnapshot(): RunSnapshot {
-      return {
-        projectId: activeRunProjectId,
-        activeTask,
-        completedTasks: [...completedTasks],
-        recentLines: [...recentLines],
-      };
-    },
+    getRunningProjectIds,
+    isProjectRunning,
+    getRunSnapshot,
     getMultiRunSnapshot,
     startSprint,
     startEpic,
     startTasks,
     startMultiSprint,
     cancelQueued,
-    stop: async () => {
-      // Stop scheduler if active
-      if (scheduler) {
-        await scheduler.stop();
-        scheduler = null;
-      }
-      await stop();
-    },
+    stopProject,
+    stop: stopAll,
   };
 }

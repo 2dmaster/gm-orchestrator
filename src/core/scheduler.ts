@@ -9,7 +9,7 @@ import type {
   CrossProjectResolver,
 } from './types.js';
 import { getActiveProject } from './types.js';
-import { runSprint, runEpic } from './orchestrator.js';
+import { runSprint, runEpic, runTasks } from './orchestrator.js';
 import type { Logger } from '../infra/logger.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -19,8 +19,9 @@ export type SchedulerStrategy = 'round-robin' | 'priority';
 export interface RunRequest {
   id: string;
   projectId: string;
-  mode: 'sprint' | 'epic';
+  mode: 'sprint' | 'epic' | 'tasks';
   epicId?: string | undefined;
+  taskIds?: string[] | undefined;
   tag?: string | undefined;
   priority: number;        // lower = higher priority (0 = critical)
   enqueuedAt: number;
@@ -44,6 +45,8 @@ export interface SchedulerPorts {
   createRunner: (projectId: string) => ClaudeRunnerPort;
   createPoller: (projectId: string) => TaskPollerPort;
   logger: Logger;
+  /** Per-slot logger factory. When provided, each slot gets its own logger scoped to a projectId. */
+  createLogger?: (projectId: string) => Logger;
   /** Optional resolver for cross-project blocker dependencies. */
   crossProjectResolver?: CrossProjectResolver;
 }
@@ -67,6 +70,9 @@ export interface Scheduler {
 
   /** Cancel a specific queued request (not yet running). Returns true if removed. */
   cancel(requestId: string): boolean;
+
+  /** Stop a specific project's running slot and remove its queued requests. */
+  stopProject(projectId: string): Promise<void>;
 
   /** Get current queue state. */
   readonly queue: ReadonlyArray<RunRequest>;
@@ -222,19 +228,24 @@ export function createScheduler(
       ];
     }
 
+    const slotLogger = ports.createLogger ? ports.createLogger(request.projectId) : ports.logger;
     const orchestratorPorts = {
       gm,
       runner,
       poller,
-      logger: ports.logger,
+      logger: slotLogger,
       signal: slot.abort.signal,
       ...(ports.crossProjectResolver ? { crossProjectResolver: ports.crossProjectResolver } : {}),
     };
 
-    const promise: Promise<SprintStats> =
-      request.mode === 'epic' && request.epicId
-        ? runEpic(request.epicId, orchestratorPorts, slotConfig)
-        : runSprint(orchestratorPorts, slotConfig);
+    let promise: Promise<SprintStats>;
+    if (request.mode === 'tasks' && request.taskIds) {
+      promise = runTasks(request.taskIds, orchestratorPorts, slotConfig);
+    } else if (request.mode === 'epic' && request.epicId) {
+      promise = runEpic(request.epicId, orchestratorPorts, slotConfig);
+    } else {
+      promise = runSprint(orchestratorPorts, slotConfig);
+    }
 
     slot.runPromise = promise;
 
@@ -304,11 +315,36 @@ export function createScheduler(
     return true;
   }
 
+  async function stopProject(projectId: string): Promise<void> {
+    // Remove queued requests for this project
+    for (let i = requestQueue.length - 1; i >= 0; i--) {
+      if (requestQueue[i]!.projectId === projectId) {
+        requestQueue.splice(i, 1);
+      }
+    }
+
+    // Abort running slots for this project
+    const runningSlots = slots.filter(
+      (s) => s.status === 'running' && s.projectId === projectId,
+    );
+    for (const slot of runningSlots) {
+      slot.status = 'stopping';
+      slot.abort?.abort();
+    }
+
+    // Wait for those slots to settle
+    const promises = runningSlots
+      .map((s) => s.runPromise)
+      .filter((p): p is Promise<SprintStats> => p !== null);
+    await Promise.allSettled(promises);
+  }
+
   return {
     enqueue,
     start,
     stop,
     cancel,
+    stopProject,
     get queue(): ReadonlyArray<RunRequest> {
       return requestQueue;
     },

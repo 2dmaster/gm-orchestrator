@@ -86,6 +86,15 @@ function makeDeps(overrides: Partial<RunnerServiceDeps> = {}): RunnerServiceDeps
   return { config, gm, runner, poller, logger, wsBus, ...overrides };
 }
 
+/** Wait for a condition to become true (with timeout). */
+async function waitFor(fn: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!fn()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timeout');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 describe('RunnerService', () => {
@@ -99,52 +108,50 @@ describe('RunnerService', () => {
     it('starts idle and isRunning is false', () => {
       const svc = createRunnerService(deps);
       expect(svc.isRunning).toBe(false);
+      expect(svc.getRunningProjectIds()).toEqual([]);
     });
 
     it('isRunning becomes true during a sprint', async () => {
-      // Block inside listTasks so we can observe isRunning=true
       let resolveBlock: () => void;
       const blockPromise = new Promise<void>((r) => { resolveBlock = r; });
-      let sawRunning = false;
 
       const gm = deps.gm as { listTasks: ReturnType<typeof vi.fn> };
       let callCount = 0;
       gm.listTasks.mockImplementation(async () => {
         callCount++;
         if (callCount === 1) {
-          // First call: block so we can check isRunning
           await blockPromise;
         }
         return [];
       });
 
       const svc = createRunnerService(deps);
-      const promise = svc.startSprint('test-project');
+      await svc.startSprint('test-project');
 
-      // Give it a tick to enter the listTasks call
-      await new Promise((r) => setTimeout(r, 10));
-      sawRunning = svc.isRunning;
+      // Wait for scheduler to pick up the request
+      await waitFor(() => svc.isProjectRunning('test-project'));
+      expect(svc.isRunning).toBe(true);
+      expect(svc.getRunningProjectIds()).toContain('test-project');
 
       resolveBlock!();
-      await promise;
-
-      expect(sawRunning).toBe(true);
+      await waitFor(() => !svc.isRunning);
       expect(svc.isRunning).toBe(false);
     });
 
     it('returns to idle after sprint completes', async () => {
-      // Empty task list → immediate completion
       (deps.gm.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
       const svc = createRunnerService(deps);
       await svc.startSprint('test-project');
+
+      // Wait for scheduler to complete
+      await waitFor(() => !svc.isRunning, 3000);
       expect(svc.isRunning).toBe(false);
     });
   });
 
-  describe('concurrent run prevention', () => {
-    it('throws when starting a sprint while already running', async () => {
-      // Make the sprint hang so we can try a second start
+  describe('per-project blocking', () => {
+    it('throws when starting a sprint for the same project', async () => {
       let resolveHang: () => void;
       const hangPromise = new Promise<void>((r) => { resolveHang = r; });
       const gm = deps.gm as { listTasks: ReturnType<typeof vi.fn> };
@@ -157,41 +164,43 @@ describe('RunnerService', () => {
       });
 
       const svc = createRunnerService(deps);
-      const first = svc.startSprint('test-project');
-
-      // Wait for it to start
-      await new Promise((r) => setTimeout(r, 10));
+      await svc.startSprint('test-project');
+      await waitFor(() => svc.isProjectRunning('test-project'));
 
       await expect(svc.startSprint('test-project')).rejects.toThrow(
-        'A run is already in progress'
+        'already in progress'
       );
 
       resolveHang!();
-      await first;
+      await waitFor(() => !svc.isRunning);
     });
 
-    it('throws when starting an epic while a sprint is running', async () => {
+    it('allows starting a sprint for a different project', async () => {
+      // Configure two projects
+      deps.config.projects.push({ baseUrl: 'http://localhost:3000', projectId: 'project-2' });
+      deps.config.concurrency = 2;
+
       let resolveHang: () => void;
       const hangPromise = new Promise<void>((r) => { resolveHang = r; });
       const gm = deps.gm as { listTasks: ReturnType<typeof vi.fn> };
       let callCount = 0;
       gm.listTasks.mockImplementation(async () => {
         callCount++;
-        if (callCount <= 2) return [makeTask()];
-        await hangPromise;
+        if (callCount === 1) {
+          await hangPromise;
+        }
         return [];
       });
 
       const svc = createRunnerService(deps);
-      const first = svc.startSprint('test-project');
-      await new Promise((r) => setTimeout(r, 10));
+      await svc.startSprint('test-project');
+      await waitFor(() => svc.isProjectRunning('test-project'));
 
-      await expect(svc.startEpic('test-project', 'epic-1')).rejects.toThrow(
-        'A run is already in progress'
-      );
+      // Should NOT throw — different project
+      await expect(svc.startSprint('project-2')).resolves.not.toThrow();
 
       resolveHang!();
-      await first;
+      await waitFor(() => !svc.isRunning);
     });
   });
 
@@ -201,6 +210,7 @@ describe('RunnerService', () => {
 
       const svc = createRunnerService(deps);
       await svc.startSprint('test-project');
+      await waitFor(() => !svc.isRunning, 3000);
 
       const broadcast = deps.wsBus.broadcast as ReturnType<typeof vi.fn>;
       const events = broadcast.mock.calls.map((c) => (c[0] as ServerEvent).type);
@@ -212,20 +222,21 @@ describe('RunnerService', () => {
 
       const svc = createRunnerService(deps);
       await svc.startSprint('test-project');
+      await waitFor(() => !svc.isRunning, 3000);
 
       const broadcast = deps.wsBus.broadcast as ReturnType<typeof vi.fn>;
       const events = broadcast.mock.calls.map((c) => (c[0] as ServerEvent).type);
       expect(events).toContain('run:complete');
     });
 
-    it('emits run:started with mode epic and epicId', async () => {
-      // Make listEpicTasks return done task so epic finishes immediately
+    it('emits run:started with mode epic', async () => {
       (deps.gm.listEpicTasks as ReturnType<typeof vi.fn>).mockResolvedValue(
         [makeTask({ status: 'done' })]
       );
 
       const svc = createRunnerService(deps);
       await svc.startEpic('test-project', 'epic-1');
+      await waitFor(() => !svc.isRunning, 3000);
 
       const broadcast = deps.wsBus.broadcast as ReturnType<typeof vi.fn>;
       const startEvent = broadcast.mock.calls.find(
@@ -234,10 +245,10 @@ describe('RunnerService', () => {
       expect(startEvent).toBeDefined();
       const payload = (startEvent![0] as Extract<ServerEvent, { type: 'run:started' }>).payload;
       expect(payload.mode).toBe('epic');
-      expect(payload.epicId).toBe('epic-1');
+      expect(payload.projectId).toBe('test-project');
     });
 
-    it('emits run:stopped when stop() is called', async () => {
+    it('emits run:stopped when stopProject() is called', async () => {
       let resolveHang: () => void;
       const hangPromise = new Promise<void>((r) => { resolveHang = r; });
       const gm = deps.gm as { listTasks: ReturnType<typeof vi.fn> };
@@ -250,12 +261,11 @@ describe('RunnerService', () => {
       });
 
       const svc = createRunnerService(deps);
-      const runP = svc.startSprint('test-project');
+      await svc.startSprint('test-project');
+      await waitFor(() => svc.isProjectRunning('test-project'));
 
-      await new Promise((r) => setTimeout(r, 10));
       resolveHang!();
-      await svc.stop();
-      await runP;
+      await svc.stopProject('test-project');
 
       const broadcast = deps.wsBus.broadcast as ReturnType<typeof vi.fn>;
       const events = broadcast.mock.calls.map((c) => (c[0] as ServerEvent).type);

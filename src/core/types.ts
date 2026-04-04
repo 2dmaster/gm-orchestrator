@@ -176,8 +176,8 @@ export interface SprintStats {
 // ─── WebSocket Event Types ───────────────────────────────────────────────
 
 export type ServerEvent =
-  | { type: 'run:started';   payload: { mode: 'sprint' | 'epic'; epicId?: string; projectId?: string } }
-  | { type: 'run:stopped' }
+  | { type: 'run:started';   payload: { mode: 'sprint' | 'epic' | 'tasks'; epicId?: string; projectId?: string } }
+  | { type: 'run:stopped';   payload?: { projectId?: string } }
   | { type: 'run:complete';  payload: SprintStats & { projectId?: string } }
   | { type: 'task:started';  payload: { task: Task; projectId?: string } }
   | { type: 'task:done';     payload: { task: Task; projectId?: string } }
@@ -191,8 +191,8 @@ export type ServerEvent =
   | { type: 'agent:turn';       payload: { taskId: string; turn: number; projectId?: string } }
   | { type: 'agent:cost';       payload: { taskId: string; costUsd: number; inputTokens: number; outputTokens: number; projectId?: string } }
   | { type: 'agent:warning';    payload: { taskId: string; message: string; projectId?: string } }
-  | { type: 'scheduler:enqueued';  payload: { requestId: string; projectId: string; mode: 'sprint' | 'epic' } }
-  | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: 'sprint' | 'epic' } }
+  | { type: 'scheduler:enqueued';  payload: { requestId: string; projectId: string; mode: 'sprint' | 'epic' | 'tasks' } }
+  | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: 'sprint' | 'epic' | 'tasks' } }
   | { type: 'scheduler:slot_completed'; payload: { slotId: number; projectId: string; stats: SprintStats } }
   | { type: 'scheduler:drained' }
   | { type: 'error';         payload: { message: string; projectId?: string } };

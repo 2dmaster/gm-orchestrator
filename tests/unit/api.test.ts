@@ -22,11 +22,19 @@ function makeConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
 }
 
 function makeRunner(overrides: Partial<RunnerService> = {}): RunnerService {
+  const _runningProjectIds: string[] = overrides.isRunning ? ['test-project'] : [];
   return {
     isRunning: false,
-    getRunSnapshot: () => ({ activeTask: null, completedTasks: [], recentLines: [] }),
+    getRunningProjectIds: () => _runningProjectIds,
+    isProjectRunning: (pid: string) => _runningProjectIds.includes(pid),
+    getRunSnapshot: () => ({ projectId: null, activeTask: null, completedTasks: [], recentLines: [] }),
+    getMultiRunSnapshot: () => ({ slots: [], queue: [], aggregateStats: { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 } }),
     startSprint: async () => {},
     startEpic: async () => {},
+    startTasks: async () => {},
+    startMultiSprint: async () => [],
+    cancelQueued: () => false,
+    stopProject: async () => {},
     stop: async () => {},
     ...overrides,
   };
@@ -274,8 +282,10 @@ describe('API routes', () => {
       expect(res.status).toBe(400);
     });
 
-    it('returns 409 if already running', async () => {
-      const runner = makeRunner({ isRunning: true });
+    it('returns 409 if already running for same project', async () => {
+      const runner = makeRunner({
+        isProjectRunning: (pid: string) => pid === 'p1',
+      });
       await startApp({ runner });
       const res = await fetch(`${baseUrl}/api/run/sprint`, {
         method: 'POST',
@@ -321,11 +331,16 @@ describe('API routes', () => {
       let stopped = false;
       const runner = makeRunner({
         isRunning: true,
+        getRunningProjectIds: () => ['p1'],
         stop: async () => { stopped = true; },
       });
       await startApp({ runner });
 
-      const res = await fetch(`${baseUrl}/api/run/stop`, { method: 'POST' });
+      const res = await fetch(`${baseUrl}/api/run/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const body = await res.json();
 
       expect(res.status).toBe(200);
@@ -333,9 +348,33 @@ describe('API routes', () => {
       expect(stopped).toBe(true);
     });
 
+    it('stops a specific project', async () => {
+      let stoppedProject = '';
+      const runner = makeRunner({
+        isProjectRunning: (pid: string) => pid === 'p1',
+        stopProject: async (pid: string) => { stoppedProject = pid; },
+      });
+      await startApp({ runner });
+
+      const res = await fetch(`${baseUrl}/api/run/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: 'p1' }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(stoppedProject).toBe('p1');
+    });
+
     it('returns 409 if nothing is running', async () => {
       await startApp();
-      const res = await fetch(`${baseUrl}/api/run/stop`, { method: 'POST' });
+      const res = await fetch(`${baseUrl}/api/run/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       expect(res.status).toBe(409);
     });
   });

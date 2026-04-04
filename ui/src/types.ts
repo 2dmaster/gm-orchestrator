@@ -74,22 +74,25 @@ export interface OrchestratorConfig {
 }
 
 export type ServerEvent =
-  | { type: 'run:started';    payload: { mode: 'sprint' | 'epic'; epicId?: string; projectId?: string } }
-  | { type: 'run:stopped' }
-  | { type: 'run:complete';   payload: SprintStats }
-  | { type: 'task:started';   payload: { task: Task } }
-  | { type: 'task:done';      payload: { task: Task } }
-  | { type: 'task:cancelled'; payload: { task: Task; reason?: string } }
-  | { type: 'task:timeout';   payload: { task: Task } }
-  | { type: 'task:retrying';  payload: { task: Task; attempt: number } }
-  | { type: 'log:line';       payload: { taskId: string; line: string } }
-  | { type: 'agent:tool_start'; payload: { taskId: string; tool: string; input: string } }
-  | { type: 'agent:tool_end';   payload: { taskId: string; tool: string; output: string } }
-  | { type: 'agent:thinking';   payload: { taskId: string; text: string } }
-  | { type: 'agent:turn';       payload: { taskId: string; turn: number } }
-  | { type: 'agent:cost';       payload: { taskId: string; costUsd: number; inputTokens: number; outputTokens: number } }
-  | { type: 'agent:warning';    payload: { taskId: string; message: string } }
-  | { type: 'error';          payload: { message: string } };
+  | { type: 'run:started';    payload: { mode: 'sprint' | 'epic' | 'tasks'; epicId?: string; projectId?: string } }
+  | { type: 'run:stopped';    payload?: { projectId?: string } }
+  | { type: 'run:complete';   payload: SprintStats & { projectId?: string } }
+  | { type: 'task:started';   payload: { task: Task; projectId?: string } }
+  | { type: 'task:done';      payload: { task: Task; projectId?: string } }
+  | { type: 'task:cancelled'; payload: { task: Task; reason?: string; projectId?: string } }
+  | { type: 'task:timeout';   payload: { task: Task; projectId?: string } }
+  | { type: 'task:retrying';  payload: { task: Task; attempt: number; projectId?: string } }
+  | { type: 'log:line';       payload: { taskId: string; line: string; projectId?: string } }
+  | { type: 'agent:tool_start'; payload: { taskId: string; tool: string; input: string; projectId?: string } }
+  | { type: 'agent:tool_end';   payload: { taskId: string; tool: string; output: string; projectId?: string } }
+  | { type: 'agent:thinking';   payload: { taskId: string; text: string; projectId?: string } }
+  | { type: 'agent:turn';       payload: { taskId: string; turn: number; projectId?: string } }
+  | { type: 'agent:cost';       payload: { taskId: string; costUsd: number; inputTokens: number; outputTokens: number; projectId?: string } }
+  | { type: 'agent:warning';    payload: { taskId: string; message: string; projectId?: string } }
+  | { type: 'scheduler:slot_started'; payload: { slotId: number; projectId: string; mode: string } }
+  | { type: 'scheduler:slot_completed'; payload: { slotId: number; projectId: string; stats: SprintStats } }
+  | { type: 'scheduler:drained' }
+  | { type: 'error';          payload: { message: string; projectId?: string } };
 
 export type ServerEventType = ServerEvent['type'];
 
@@ -114,6 +117,7 @@ export interface StatusResponse {
   version: string;
   config: OrchestratorConfig;
   isRunning: boolean;
+  runningProjectIds: string[];
   setupRequired: boolean;
   run?: RunSnapshot;
 }
