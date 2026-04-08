@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] — 2026-04-08
+
+### Added
+- Model selector dropdown on Dashboard — choose Sonnet 4.6, Opus 4.6, or Haiku 4.5 before starting a run
+- `model` field in `OrchestratorConfig` for programmatic model override
+- Model parameter in API endpoints: `/api/run/sprint`, `/api/run/epic`, `/api/projects/:id/run-tasks`
+- Model flows through scheduler `RunRequest` → per-slot config → Agent SDK `query()` options
+
 ## [0.6.1] — 2026-04-04
 
 ### Fixed

@@ -182,6 +182,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
             maxTurns: config.maxTurns,
             mcpServers,
             settingSources: ['project'],
+            ...(config.model ? { model: config.model } : {}),
             ...(slotAbort?.signal ? { abortSignal: slotAbort.signal } : {}),
           },
         })) {
@@ -372,36 +373,36 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
     );
   }
 
-  async function startSprint(projectId: string, tag?: string): Promise<void> {
+  async function startSprint(projectId: string, tag?: string, model?: string): Promise<void> {
     if (isProjectRunning(projectId)) {
       throw new Error(`A run is already in progress for project "${projectId}"`);
     }
 
-    logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''})`);
+    logger.section(`Runner: starting sprint (project=${projectId}${tag ? `, tag=${tag}` : ''}${model ? `, model=${model}` : ''})`);
     const sched = ensureScheduler();
-    sched.enqueue({ projectId, mode: 'sprint', tag, priority: PRIORITY_MAP['medium']! });
+    sched.enqueue({ projectId, mode: 'sprint', tag, model, priority: PRIORITY_MAP['medium']! });
     sched.start();
   }
 
-  async function startEpic(projectId: string, epicId: string): Promise<void> {
+  async function startEpic(projectId: string, epicId: string, model?: string): Promise<void> {
     if (isProjectRunning(projectId)) {
       throw new Error(`A run is already in progress for project "${projectId}"`);
     }
 
-    logger.section(`Runner: starting epic ${epicId} (project=${projectId})`);
+    logger.section(`Runner: starting epic ${epicId} (project=${projectId}${model ? `, model=${model}` : ''})`);
     const sched = ensureScheduler();
-    sched.enqueue({ projectId, mode: 'epic', epicId, priority: PRIORITY_MAP['medium']! });
+    sched.enqueue({ projectId, mode: 'epic', epicId, model, priority: PRIORITY_MAP['medium']! });
     sched.start();
   }
 
-  async function startTasks(projectId: string, taskIds: string[]): Promise<void> {
+  async function startTasks(projectId: string, taskIds: string[], model?: string): Promise<void> {
     if (isProjectRunning(projectId)) {
       throw new Error(`A run is already in progress for project "${projectId}"`);
     }
 
-    logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length})`);
+    logger.section(`Runner: starting task run (project=${projectId}, tasks=${taskIds.length}${model ? `, model=${model}` : ''})`);
     const sched = ensureScheduler();
-    sched.enqueue({ projectId, mode: 'tasks', taskIds, priority: PRIORITY_MAP['medium']! });
+    sched.enqueue({ projectId, mode: 'tasks', taskIds, model, priority: PRIORITY_MAP['medium']! });
     sched.start();
   }
 

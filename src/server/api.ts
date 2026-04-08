@@ -19,9 +19,9 @@ export interface RunnerService {
   isProjectRunning(projectId: string): boolean;
   getRunSnapshot(): RunSnapshot;
   getMultiRunSnapshot(): MultiRunSnapshot;
-  startSprint(projectId: string, tag?: string): Promise<void>;
-  startEpic(projectId: string, epicId: string): Promise<void>;
-  startTasks(projectId: string, taskIds: string[]): Promise<void>;
+  startSprint(projectId: string, tag?: string, model?: string): Promise<void>;
+  startEpic(projectId: string, epicId: string, model?: string): Promise<void>;
+  startTasks(projectId: string, taskIds: string[], model?: string): Promise<void>;
   startMultiSprint(projectIds: string[], tag?: string, priority?: string): Promise<string[]>;
   cancelQueued(requestId: string): boolean;
   stopProject(projectId: string): Promise<void>;
@@ -292,7 +292,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   // POST /api/run/sprint
   router.post('/api/run/sprint', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { projectId, tag } = req.body as { projectId?: string; tag?: string };
+      const { projectId, tag, model } = req.body as { projectId?: string; tag?: string; model?: string };
       if (!projectId) {
         res.status(400).json({ error: 'projectId is required' });
         return;
@@ -301,10 +301,10 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
-      deps.runner.startSprint(projectId, tag).catch((err) => {
+      deps.runner.startSprint(projectId, tag, model).catch((err) => {
         deps.logger.error(`Sprint run failed: ${(err as Error).message}`);
       });
-      res.json({ ok: true, mode: 'sprint', projectId, tag });
+      res.json({ ok: true, mode: 'sprint', projectId, tag, model });
     } catch (err) {
       next(err);
     }
@@ -365,7 +365,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   // POST /api/run/epic
   router.post('/api/run/epic', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { projectId, epicId } = req.body as { projectId?: string; epicId?: string };
+      const { projectId, epicId, model } = req.body as { projectId?: string; epicId?: string; model?: string };
       if (!projectId || !epicId) {
         res.status(400).json({ error: 'projectId and epicId are required' });
         return;
@@ -374,10 +374,10 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
-      deps.runner.startEpic(projectId, epicId).catch((err) => {
+      deps.runner.startEpic(projectId, epicId, model).catch((err) => {
         deps.logger.error(`Epic run failed: ${(err as Error).message}`);
       });
-      res.json({ ok: true, mode: 'epic', projectId, epicId });
+      res.json({ ok: true, mode: 'epic', projectId, epicId, model });
     } catch (err) {
       next(err);
     }
@@ -387,7 +387,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   router.post('/api/projects/:projectId/run-tasks', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const projectId = Array.isArray(req.params['projectId']) ? req.params['projectId'][0]! : req.params['projectId']!;
-      const { taskIds } = req.body as { taskIds?: string[] };
+      const { taskIds, model } = req.body as { taskIds?: string[]; model?: string };
       if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
         res.status(400).json({ error: 'taskIds[] is required and must be a non-empty array' });
         return;
@@ -400,10 +400,10 @@ export function createApiRouter(deps: ApiDeps): Router {
         res.status(409).json({ error: `A run is already in progress for project "${projectId}"` });
         return;
       }
-      deps.runner.startTasks(projectId, taskIds).catch((err) => {
+      deps.runner.startTasks(projectId, taskIds, model).catch((err) => {
         deps.logger.error(`Task run failed: ${(err as Error).message}`);
       });
-      res.json({ ok: true, mode: 'tasks', projectId, taskIds });
+      res.json({ ok: true, mode: 'tasks', projectId, taskIds, model });
     } catch (err) {
       next(err);
     }

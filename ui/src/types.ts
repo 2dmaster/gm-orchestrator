@@ -68,6 +68,7 @@ export interface OrchestratorConfig {
   maxRetries: number;
   claudeArgs: string[];
   dryRun: boolean;
+  model?: string;
   maxTurns: number;
   agentTimeoutMs: number;
   tag?: string;

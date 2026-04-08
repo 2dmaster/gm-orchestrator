@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen, CheckSquare } from "lucide-react";
+import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen, CheckSquare, Cpu } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,13 @@ const PRIORITY_ORDER: Record<string, number> = {
 
 const MAX_VISIBLE_TASKS = 5;
 const CLOSED_STATUSES = ["done", "cancelled"];
+
+const MODEL_OPTIONS: Record<string, string> = {
+  "default": "Default model",
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-opus-4-6": "Opus 4.6",
+  "claude-haiku-4-5-20251001": "Haiku 4.5",
+};
 
 function useEpics(projectId: string | null) {
   const [epics, setEpics] = useState<Epic[]>([]);
@@ -150,6 +157,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [showClosedEpics, setShowClosedEpics] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [selectedModel, setSelectedModel] = useState("default");
 
   const visibleEpics = useMemo(
     () =>
@@ -222,22 +230,24 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
 
   const handleRunSprint = useCallback(async () => {
     try {
-      await orchestrator.startSprint(projectId);
+      const model = selectedModel !== "default" ? selectedModel : undefined;
+      await orchestrator.startSprint(projectId, undefined, model);
       navigate("/sprint");
     } catch (err) {
       toast.error((err as Error).message);
     }
-  }, [projectId, orchestrator, navigate]);
+  }, [projectId, orchestrator, navigate, selectedModel]);
 
   const handleRunEpic = useCallback(async () => {
     if (!selectedEpicId) return;
     try {
-      await orchestrator.startEpic(projectId, selectedEpicId);
+      const model = selectedModel !== "default" ? selectedModel : undefined;
+      await orchestrator.startEpic(projectId, selectedEpicId, model);
       navigate("/sprint");
     } catch (err) {
       toast.error((err as Error).message);
     }
-  }, [projectId, selectedEpicId, orchestrator, navigate]);
+  }, [projectId, selectedEpicId, orchestrator, navigate, selectedModel]);
 
   // Runnable tasks: only todo or in_progress
   const runnableTasks = useMemo(
@@ -269,18 +279,39 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
   const handleRunSelected = useCallback(async () => {
     if (selectedTaskIds.size === 0) return;
     try {
-      await orchestrator.startTasks(projectId, [...selectedTaskIds]);
+      const model = selectedModel !== "default" ? selectedModel : undefined;
+      await orchestrator.startTasks(projectId, [...selectedTaskIds], model);
       setSelectedTaskIds(new Set());
       navigate("/sprint");
     } catch (err) {
       toast.error((err as Error).message);
     }
-  }, [projectId, selectedTaskIds, orchestrator, navigate]);
+  }, [projectId, selectedTaskIds, orchestrator, navigate, selectedModel]);
 
   return (
     <div className="space-y-4 pt-2">
       {/* Action buttons */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <Select
+            items={MODEL_OPTIONS}
+            value={selectedModel}
+            onValueChange={(val: string | null) => setSelectedModel(val ?? "default")}
+            disabled={orchestrator.isProjectRunning(projectId)}
+          >
+            <SelectTrigger size="sm" className="text-xs font-mono min-w-[130px]">
+              <Cpu className="w-3 h-3 mr-1 shrink-0" />
+              <SelectValue placeholder="Default model" />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              {Object.entries(MODEL_OPTIONS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <Button
           size="sm"
           onClick={handleRunSprint}

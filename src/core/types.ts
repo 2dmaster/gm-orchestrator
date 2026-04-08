@@ -112,6 +112,7 @@ export interface OrchestratorConfig {
   // Claude Code
   claudeArgs: string[];
   dryRun: boolean;
+  model?: string;            // Claude model override (e.g. 'claude-sonnet-4-6', 'claude-opus-4-6')
 
   // Agent SDK safety
   maxTurns: number;           // max SDK turns per task (default 200)

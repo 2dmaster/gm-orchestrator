@@ -23,6 +23,7 @@ export interface RunRequest {
   epicId?: string | undefined;
   taskIds?: string[] | undefined;
   tag?: string | undefined;
+  model?: string | undefined;   // Claude model override
   priority: number;        // lower = higher priority (0 = critical)
   enqueuedAt: number;
   /** Pipeline run ID — groups related stage requests. */
@@ -286,6 +287,7 @@ export function createScheduler(
       ...config,
       activeProjectId: request.projectId,
       ...(request.tag !== undefined ? { tag: request.tag } : {}),
+      ...(request.model !== undefined ? { model: request.model } : {}),
     };
 
     // Ensure project is in the projects list

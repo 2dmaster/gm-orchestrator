@@ -72,7 +72,7 @@ The primary interface. Opens automatically at `http://localhost:4242`.
 
 ### Dashboard
 Overview of your project: task queue sorted by priority, epics, done count for today.
-One click to start a sprint or select an epic.
+One click to start a sprint or select an epic. Choose the Claude model (Sonnet, Opus, Haiku) from the dropdown before starting.
 
 ### Sprint Runner
 Live view while work is in progress:
@@ -196,6 +196,7 @@ Resolved in order — later sources override earlier:
 | `pauseMs`    | `number`   | `2000`            | Pause between tasks              |
 | `maxRetries` | `number`   | `1`               | Retries on timeout/error         |
 | `claudeArgs` | `string[]` | `[]`              | Extra args for `claude --print`  |
+| `model`      | `string`   |                   | Claude model override (e.g. `claude-sonnet-4-6`) |
 | `dryRun`     | `boolean`  | `false`           | Preview prompts, don't run       |
 
 ---

@@ -3,9 +3,9 @@ import type { StatusResponse, Pipeline, PipelineRun } from '../types';
 import type { UseWebSocketReturn } from './useWebSocket';
 
 export interface UseOrchestratorReturn {
-  startSprint: (projectId: string, tag?: string) => Promise<void>;
-  startEpic: (projectId: string, epicId: string) => Promise<void>;
-  startTasks: (projectId: string, taskIds: string[]) => Promise<void>;
+  startSprint: (projectId: string, tag?: string, model?: string) => Promise<void>;
+  startEpic: (projectId: string, epicId: string, model?: string) => Promise<void>;
+  startTasks: (projectId: string, taskIds: string[], model?: string) => Promise<void>;
   stop: () => Promise<void>;
   stopProject: (projectId: string) => Promise<void>;
   pause: () => Promise<void>;
@@ -166,18 +166,18 @@ export function useOrchestrator(ws: UseWebSocketReturn): UseOrchestratorReturn {
     }
   }, [ws.lastEvent, fetchStatus, fetchPipelineRuns]);
 
-  const startSprint = useCallback(async (projectId: string, tag?: string) => {
-    await post('/api/run/sprint', { projectId, tag });
+  const startSprint = useCallback(async (projectId: string, tag?: string, model?: string) => {
+    await post('/api/run/sprint', { projectId, tag, ...(model ? { model } : {}) });
     setRunningIds((prev) => new Set([...prev, projectId]));
   }, []);
 
-  const startEpic = useCallback(async (projectId: string, epicId: string) => {
-    await post('/api/run/epic', { projectId, epicId });
+  const startEpic = useCallback(async (projectId: string, epicId: string, model?: string) => {
+    await post('/api/run/epic', { projectId, epicId, ...(model ? { model } : {}) });
     setRunningIds((prev) => new Set([...prev, projectId]));
   }, []);
 
-  const startTasks = useCallback(async (projectId: string, taskIds: string[]) => {
-    await post(`/api/projects/${encodeURIComponent(projectId)}/run-tasks`, { taskIds });
+  const startTasks = useCallback(async (projectId: string, taskIds: string[], model?: string) => {
+    await post(`/api/projects/${encodeURIComponent(projectId)}/run-tasks`, { taskIds, ...(model ? { model } : {}) });
     setRunningIds((prev) => new Set([...prev, projectId]));
   }, []);
 
