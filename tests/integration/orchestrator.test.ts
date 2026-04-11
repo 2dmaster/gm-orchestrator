@@ -277,7 +277,7 @@ describe('runEpic', () => {
     expect(epicDoneCall).toBeDefined();
   });
 
-  it('does not mark epic done if some tasks cancelled', async () => {
+  it('marks epic done when at least one task is done (mixed done/cancelled)', async () => {
     const t1 = makeTask({ id: 't1' });
     const t2 = makeTask({ id: 't2' });
     const epic = makeEpic({
@@ -295,8 +295,120 @@ describe('runEpic', () => {
 
     await runEpic('epic-1', makePorts(gm, poller, runner), BASE_CONFIG);
 
+    // The graph state must match the orchestrator's "Epic complete" log:
+    // mixed done/cancelled is still treated as a finished epic.
+    const epicDoneCall = gm.calls.moveEpic.find(
+      (c) => c.epicId === 'epic-1' && c.status === 'done',
+    );
+    expect(epicDoneCall).toBeDefined();
+  });
+
+  it('marks epic cancelled when every task is cancelled', async () => {
+    const t1 = makeTask({ id: 't1' });
+    const t2 = makeTask({ id: 't2' });
+    const epic = makeEpic({
+      id: 'epic-1',
+      tasks: [
+        { id: 't1', title: t1.title, status: 'todo' },
+        { id: 't2', title: t2.title, status: 'todo' },
+      ],
+    });
+    gm.addTask(t1);
+    gm.addTask(t2);
+    gm.addEpic(epic);
+    poller.setResult('t1', 'cancelled');
+    poller.setResult('t2', 'cancelled');
+
+    await runEpic('epic-1', makePorts(gm, poller, runner), BASE_CONFIG);
+
+    const epicCancelledCall = gm.calls.moveEpic.find(
+      (c) => c.epicId === 'epic-1' && c.status === 'cancelled',
+    );
+    expect(epicCancelledCall).toBeDefined();
     const epicDoneCall = gm.calls.moveEpic.find((c) => c.status === 'done');
     expect(epicDoneCall).toBeUndefined();
+  });
+
+  it('does not mark epic done when remaining tasks are all blocked', async () => {
+    const upstream = makeTask({ id: 'up', status: 'in_progress' });
+    const downstream = makeTask({
+      id: 'down',
+      blockedBy: [{ id: 'up', title: upstream.title, status: 'in_progress' }],
+    });
+    const epic = makeEpic({
+      id: 'epic-1',
+      tasks: [
+        { id: 'up', title: upstream.title, status: 'in_progress' },
+        { id: 'down', title: downstream.title, status: 'todo' },
+      ],
+    });
+    gm.addTask(upstream);
+    gm.addTask(downstream);
+    gm.addEpic(epic);
+    // upstream stays in_progress (poller times out on it); downstream stays blocked
+    poller.setResult('up', 'timeout');
+
+    await runEpic('epic-1', makePorts(gm, poller, runner), {
+      ...BASE_CONFIG,
+      maxRetries: 0,
+    });
+
+    // upstream got moved to cancelled by retry-exhaustion; downstream still blocked.
+    // After upstream is cancelled, downstream remains in queue but blocked → loop exits
+    // via "all blocked", NOT via queue-drained → epic stays open.
+    const epicMoveCall = gm.calls.moveEpic.find(
+      (c) => c.epicId === 'epic-1' && (c.status === 'done' || c.status === 'cancelled'),
+    );
+    expect(epicMoveCall).toBeUndefined();
+  });
+
+  it('does not run dependents when an upstream task was cancelled (default)', async () => {
+    const upstream = makeTask({ id: 'up', status: 'cancelled' });
+    const downstream = makeTask({
+      id: 'down',
+      blockedBy: [{ id: 'up', title: upstream.title, status: 'cancelled' }],
+    });
+    const epic = makeEpic({
+      id: 'epic-1',
+      tasks: [
+        { id: 'up', title: upstream.title, status: 'cancelled' },
+        { id: 'down', title: downstream.title, status: 'todo' },
+      ],
+    });
+    gm.addTask(upstream);
+    gm.addTask(downstream);
+    gm.addEpic(epic);
+    poller.setResult('down', 'done');
+
+    await runEpic('epic-1', makePorts(gm, poller, runner), BASE_CONFIG);
+
+    expect(runner.calls.find((c) => c.taskId === 'down')).toBeUndefined();
+  });
+
+  it('runs dependents of cancelled upstream when allowCancelledBlockers=true', async () => {
+    const upstream = makeTask({ id: 'up', status: 'cancelled' });
+    const downstream = makeTask({
+      id: 'down',
+      blockedBy: [{ id: 'up', title: upstream.title, status: 'cancelled' }],
+    });
+    const epic = makeEpic({
+      id: 'epic-1',
+      tasks: [
+        { id: 'up', title: upstream.title, status: 'cancelled' },
+        { id: 'down', title: downstream.title, status: 'todo' },
+      ],
+    });
+    gm.addTask(upstream);
+    gm.addTask(downstream);
+    gm.addEpic(epic);
+    poller.setResult('down', 'done');
+
+    await runEpic('epic-1', makePorts(gm, poller, runner), {
+      ...BASE_CONFIG,
+      allowCancelledBlockers: true,
+    });
+
+    expect(runner.calls.find((c) => c.taskId === 'down')).toBeDefined();
   });
 
   it('skips already-done tasks in epic', async () => {
@@ -540,7 +652,8 @@ describe('post-task verification hooks', () => {
     const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
 
     expect(stats.done).toBe(0);
-    expect(stats.errors).toBe(1);
+    expect(stats.verifyFailed).toBe(1);
+    expect(stats.errors).toBe(0);
   });
 
   it('adds auto-verify-failed tag to task on hook failure', async () => {
@@ -559,20 +672,42 @@ describe('post-task verification hooks', () => {
     expect(updateCall?.fields.tags).toContain('backend');
   });
 
-  it('halts sprint when verify fails — does not run subsequent tasks', async () => {
+  it('continues past verify_failed by default — runs subsequent tasks', async () => {
+    gm.addTask(makeTask({ id: 'task-1', priority: 'critical' }));
+    gm.addTask(makeTask({ id: 'task-2', priority: 'high' }));
+    gm.addTask(makeTask({ id: 'task-3', priority: 'low' }));
+    poller.setResult('task-1', 'done');
+    poller.setResult('task-2', 'done');
+    poller.setResult('task-3', 'done');
+    hookRunner.setFailure('make-verify', 1, 'fail');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    // All three tasks ran despite every one failing verification — loop did not halt
+    expect(runner.calls.map((c) => c.taskId)).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(stats.verifyFailed).toBe(3);
+    expect(stats.done).toBe(0);
+  });
+
+  it('halts sprint on verify_failed when haltOnVerifyFailure=true', async () => {
     gm.addTask(makeTask({ id: 'task-1', priority: 'critical' }));
     gm.addTask(makeTask({ id: 'task-2', priority: 'low' }));
     poller.setResult('task-1', 'done');
     poller.setResult('task-2', 'done');
     hookRunner.setFailure('make-verify', 1, 'fail');
 
-    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const config = {
+      ...BASE_CONFIG,
+      postTaskHooks: [VERIFY_HOOK],
+      haltOnVerifyFailure: true,
+    };
     const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
 
-    // task-1 fails verify, sprint should halt and not run task-2
+    // task-1 fails verify, sprint halts, task-2 never runs
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0]?.taskId).toBe('task-1');
-    expect(stats.errors).toBe(1);
+    expect(stats.verifyFailed).toBe(1);
     expect(stats.done).toBe(0);
   });
 
@@ -587,7 +722,7 @@ describe('post-task verification hooks', () => {
     // Should NOT retry — verify_failed is not retryable
     expect(runner.calls).toHaveLength(1);
     expect(stats.retried).toBe(0);
-    expect(stats.errors).toBe(1);
+    expect(stats.verifyFailed).toBe(1);
   });
 
   it('skips hooks when no hookRunner is provided', async () => {
@@ -626,7 +761,7 @@ describe('post-task verification hooks', () => {
     const config = { ...BASE_CONFIG, postTaskHooks: hooks };
     const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
 
-    expect(stats.errors).toBe(1);
+    expect(stats.verifyFailed).toBe(1);
     // lint ran (passed), test ran (failed), build never ran
     expect(hookRunner.calls.map((c) => c.name)).toEqual(['lint', 'test']);
   });
@@ -655,6 +790,29 @@ describe('post-task verification hooks', () => {
     const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
     await runSprint(makePorts(gm, poller, runner, hookRunner), config);
 
+    expect(hookRunner.calls).toHaveLength(0);
+  });
+
+  it('verify-failed task is not re-picked on next sprint run (restart simulation)', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+    hookRunner.setFailure('make-verify', 1, 'fail');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+
+    // First run: task fails verification
+    await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+    expect(runner.calls).toHaveLength(1);
+
+    const taskAfter = await gm.getTask('task-1');
+    expect(taskAfter.status).toBe('cancelled');
+    expect(taskAfter.tags).toContain('auto-verify-failed');
+
+    // Second run (simulated restart): the cancelled task must NOT be picked.
+    runner.calls.length = 0;
+    hookRunner.calls.length = 0;
+    await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+    expect(runner.calls).toHaveLength(0);
     expect(hookRunner.calls).toHaveLength(0);
   });
 

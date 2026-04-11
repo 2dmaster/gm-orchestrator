@@ -1,6 +1,7 @@
 import type {
   GraphMemoryPort,
   HookRunnerPort,
+  HookExecOptions,
   PostTaskHook,
   HookExecResult,
   Task,
@@ -219,8 +220,12 @@ export class FakeRunner {
 export class FakeHookRunner implements HookRunnerPort {
   /** Preset results by hook name. Missing names default to success. */
   private results = new Map<string, HookExecResult>();
+  /** Artificial per-hook execution delay (ms), used to simulate slow hooks. */
+  private delays = new Map<string, number>();
   /** Record of all hook executions for assertions. */
   calls: PostTaskHook[] = [];
+  /** Record of exec() options for assertions. */
+  execOpts: HookExecOptions[] = [];
 
   /** Configure a specific hook name to return a given result. */
   setResult(hookName: string, result: HookExecResult): this {
@@ -234,8 +239,59 @@ export class FakeHookRunner implements HookRunnerPort {
     return this;
   }
 
-  async exec(hook: PostTaskHook): Promise<HookExecResult> {
+  /** Make a hook sleep for the given number of ms before resolving. */
+  setDelay(hookName: string, delayMs: number): this {
+    this.delays.set(hookName, delayMs);
+    return this;
+  }
+
+  async exec(hook: PostTaskHook, opts: HookExecOptions = {}): Promise<HookExecResult> {
     this.calls.push(hook);
+    this.execOpts.push(opts);
+
+    const delay = this.delays.get(hook.name) ?? 0;
+    const effectiveTimeout = opts.timeoutMs ?? hook.timeoutMs ?? Infinity;
+
+    if (delay > 0) {
+      const timedOut = delay > effectiveTimeout;
+      const waitMs = Math.min(delay, effectiveTimeout);
+
+      const aborted = await new Promise<boolean>((resolve) => {
+        if (opts.signal?.aborted) {
+          resolve(true);
+          return;
+        }
+        const timer = setTimeout(() => {
+          opts.signal?.removeEventListener('abort', onAbort);
+          resolve(false);
+        }, waitMs);
+        function onAbort(): void {
+          clearTimeout(timer);
+          resolve(true);
+        }
+        opts.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+
+      if (aborted) {
+        return {
+          success: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'aborted',
+          failureReason: 'aborted',
+        };
+      }
+      if (timedOut) {
+        return {
+          success: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: `timed out after ${effectiveTimeout}ms`,
+          failureReason: 'timeout',
+        };
+      }
+    }
+
     return this.results.get(hook.name) ?? { success: true, exitCode: 0, stdout: '', stderr: '' };
   }
 }

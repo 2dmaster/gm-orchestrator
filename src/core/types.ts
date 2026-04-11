@@ -139,6 +139,28 @@ export interface OrchestratorConfig {
 
   // Post-task verification hooks
   postTaskHooks?: PostTaskHook[];
+
+  /**
+   * Default timeout in ms for a single post-task hook when the hook itself
+   * does not specify `timeoutMs`. Applied per-hook, not across all hooks.
+   * Default 300_000 (5 minutes).
+   */
+  postTaskHookTimeoutMs?: number;
+
+  /**
+   * When true, an upstream task in `cancelled` state is treated as a resolved
+   * blocker (dependents may run). Default false — cancelled prereqs block,
+   * because a cancellation means the prerequisite work was not actually done.
+   */
+  allowCancelledBlockers?: boolean;
+
+  /**
+   * When true, a `verify_failed` result halts the entire sprint/epic loop.
+   * Default false — the failed task is already moved to a stable state and
+   * tagged, so the loop continues to the next task. Opt-in for the old
+   * fail-fast behavior.
+   */
+  haltOnVerifyFailure?: boolean;
 }
 
 /** Persisted in config so restart survives process restarts. */
@@ -235,6 +257,9 @@ export interface PostTaskHook {
   onFailure: 'block' | 'warn';
 }
 
+/** Why a hook failed, if it did not exit cleanly with a non-zero code. */
+export type HookFailureReason = 'timeout' | 'aborted';
+
 /** Result of executing a single post-task hook command. */
 export interface HookExecResult {
   success: boolean;
@@ -243,6 +268,16 @@ export interface HookExecResult {
   stdout: string;
   /** Last N lines of stderr. */
   stderr: string;
+  /** Set when the hook did not run to completion (e.g. timed out or aborted). */
+  failureReason?: HookFailureReason;
+}
+
+/** Options passed to hook execution — allows callers to cap runtime and cancel. */
+export interface HookExecOptions {
+  /** Abort the running hook process when this signal fires. */
+  signal?: AbortSignal;
+  /** Effective timeout in ms. Overrides hook.timeoutMs when provided. */
+  timeoutMs?: number;
 }
 
 /**
@@ -250,7 +285,7 @@ export interface HookExecResult {
  * Swap for a fake in tests.
  */
 export interface HookRunnerPort {
-  exec(hook: PostTaskHook): Promise<HookExecResult>;
+  exec(hook: PostTaskHook, opts?: HookExecOptions): Promise<HookExecResult>;
 }
 
 // ─── Heartbeat / Crash Recovery Types ─────────────────────────────────────
@@ -292,6 +327,7 @@ export interface SprintStats {
   retried: number;
   errors: number;
   skipped: number;
+  verifyFailed: number;
   durationMs: number;
 }
 

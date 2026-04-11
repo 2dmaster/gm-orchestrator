@@ -48,7 +48,7 @@ export async function runSprint(
 ): Promise<SprintStats> {
   const { gm, logger } = ports;
   const startTime = Date.now();
-  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 };
+  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, verifyFailed: 0, durationMs: 0 };
 
   const failedIds = new Set<string>();
   const retryCounts = new Map<string, number>();
@@ -83,7 +83,7 @@ export async function runSprint(
       return stats;
     }
 
-    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver);
+    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver, config.allowCancelledBlockers);
 
     if (!next) {
       logger.warn(`${queue.length} tasks remain but all are blocked — stopping`);
@@ -98,6 +98,7 @@ export async function runSprint(
     const halt = await handleResult(result, next, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
+      haltOnVerifyFailure: config.haltOnVerifyFailure ?? false,
     });
 
     if (halt) {
@@ -123,7 +124,7 @@ export async function runEpic(
 ): Promise<SprintStats> {
   const { gm, logger } = ports;
   const startTime = Date.now();
-  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 };
+  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, verifyFailed: 0, durationMs: 0 };
 
   const epic = await gm.getEpic(epicId);
   logger.section(`Epic: "${epic.title}" (${epicId})`);
@@ -150,10 +151,36 @@ export async function runEpic(
     );
 
     if (!queue.length) {
-      const allDone = allTasks.length > 0 && allTasks.every((t) => t.status === 'done');
-      if (allDone) {
-        logger.success('All epic tasks done — marking epic complete');
-        await gm.moveEpic(epicId, 'done');
+      // The queue is empty when every task is in a terminal state
+      // (done or cancelled) — failed-after-retries tasks are moved to
+      // cancelled by handleResult, so they show up here too. We need the
+      // epic's graph state to match what the orchestrator just observed:
+      //   - any task done       → epic done (mixed done/cancelled also done)
+      //   - all tasks cancelled → epic cancelled
+      //   - epic has zero tasks → leave epic alone
+      if (allTasks.length > 0) {
+        const everyTerminal = allTasks.every(
+          (t) => t.status === 'done' || t.status === 'cancelled'
+        );
+        const anyDone = allTasks.some((t) => t.status === 'done');
+
+        if (everyTerminal) {
+          if (anyDone) {
+            const cancelledCount = allTasks.filter((t) => t.status === 'cancelled').length;
+            const summary = cancelledCount > 0
+              ? `marking epic done (${cancelledCount} task(s) cancelled)`
+              : 'marking epic done';
+            logger.success(`All epic tasks resolved — ${summary}`);
+            await gm.moveEpic(epicId, 'done').catch((e: unknown) => {
+              logger.warn(`Could not mark epic done: ${String(e)}`);
+            });
+          } else {
+            logger.warn('All epic tasks cancelled — marking epic cancelled');
+            await gm.moveEpic(epicId, 'cancelled').catch((e: unknown) => {
+              logger.warn(`Could not mark epic cancelled: ${String(e)}`);
+            });
+          }
+        }
       }
       logger.section('Epic complete');
       stats.durationMs = Date.now() - startTime;
@@ -161,7 +188,7 @@ export async function runEpic(
       return stats;
     }
 
-    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver);
+    const next = await findNextRunnable(queue, logger, ports.crossProjectResolver, config.allowCancelledBlockers);
 
     if (!next) {
       logger.warn('All remaining epic tasks are blocked — stopping');
@@ -175,6 +202,7 @@ export async function runEpic(
     const halt = await handleResult(result, next, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
+      haltOnVerifyFailure: config.haltOnVerifyFailure ?? false,
     });
 
     if (halt) {
@@ -200,7 +228,7 @@ export async function runTasks(
 ): Promise<SprintStats> {
   const { gm, logger } = ports;
   const startTime = Date.now();
-  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 };
+  const stats: SprintStats = { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, verifyFailed: 0, durationMs: 0 };
 
   const failedIds = new Set<string>();
   const retryCounts = new Map<string, number>();
@@ -241,6 +269,7 @@ export async function runTasks(
     const halt = await handleResult(result, task, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
+      haltOnVerifyFailure: config.haltOnVerifyFailure ?? false,
     });
 
     if (halt) {
@@ -268,15 +297,16 @@ async function findNextRunnable(
   queue: Task[],
   logger: Logger,
   resolver?: CrossProjectResolver,
+  allowCancelledBlockers = false,
 ): Promise<Task | null> {
   for (const task of queue) {
     // Fast path: no cross-project blockers or no resolver
     const hasCrossProjectBlockers = task.blockedBy?.some((b) => b.projectId);
     if (!hasCrossProjectBlockers || !resolver) {
-      if (areBlockersResolved(task)) return task;
+      if (areBlockersResolved(task, allowCancelledBlockers)) return task;
     } else {
       // Slow path: resolve cross-project blockers
-      const resolved = await areBlockersResolvedAsync(task, resolver);
+      const resolved = await areBlockersResolvedAsync(task, resolver, allowCancelledBlockers);
       if (resolved) return task;
     }
     logger.skip(`blocked: "${task.title}"`);
@@ -333,7 +363,12 @@ async function runOneTask(
       const hooks = config.postTaskHooks;
       if (hooks?.length && ports.hookRunner) {
         logger.info(`Running ${hooks.length} post-task hook(s) for "${task.title}"`);
-        const report = await runPostTaskHooks(hooks, ports.hookRunner, logger);
+        const report = await runPostTaskHooks(hooks, ports.hookRunner, logger, {
+          ...(signal ? { signal } : {}),
+          ...(config.postTaskHookTimeoutMs !== undefined
+            ? { defaultTimeoutMs: config.postTaskHookTimeoutMs }
+            : {}),
+        });
 
         if (!report.passed) {
           await handleVerifyFailure(task, report, gm, logger);
@@ -367,9 +402,10 @@ async function handleResult(
     failedIds: Set<string>;
     retryCounts: Map<string, number>;
     maxRetries: number;
+    haltOnVerifyFailure: boolean;
   }
 ): Promise<boolean> {
-  const { gm, logger, stats, failedIds, retryCounts, maxRetries } = ctx;
+  const { gm, logger, stats, failedIds, retryCounts, maxRetries, haltOnVerifyFailure } = ctx;
 
   if (result === 'done' || result === 'dry_run') {
     stats.done++;
@@ -378,11 +414,17 @@ async function handleResult(
   }
 
   if (result === 'verify_failed') {
-    stats.errors++;
+    stats.verifyFailed++;
     failedIds.add(task.id);
     logger.taskResult(task, 'verify_failed');
-    logger.error(`Halting — post-task verification failed for "${task.title}" (${task.id})`);
-    return true; // halt the sprint/epic
+    if (haltOnVerifyFailure) {
+      logger.error(`Halting — post-task verification failed for "${task.title}" (${task.id})`);
+      return true;
+    }
+    logger.warn(
+      `Post-task verification failed for "${task.title}" (${task.id}) — continuing to next task`
+    );
+    return false;
   }
 
   if (result === 'cancelled') {
@@ -463,7 +505,7 @@ function logStats(logger: Logger, stats: SprintStats): void {
   logger.info(
     `✓ ${stats.done} done  ✗ ${stats.cancelled} cancelled  ` +
     `↺ ${stats.retried} retried  ⚠ ${stats.errors} errors  ` +
-    `⏱ ${secs}s`
+    `⚑ ${stats.verifyFailed} verify-failed  ⏱ ${secs}s`
   );
 }
 

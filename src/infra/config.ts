@@ -111,6 +111,9 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.lastRun !== undefined) result.lastRun = cfg.lastRun;
     if (cfg.pipelines !== undefined) result.pipelines = cfg.pipelines;
     if (cfg.postTaskHooks !== undefined) result.postTaskHooks = cfg.postTaskHooks;
+    if (cfg.postTaskHookTimeoutMs !== undefined) result.postTaskHookTimeoutMs = cfg.postTaskHookTimeoutMs;
+    if (cfg.allowCancelledBlockers !== undefined) result.allowCancelledBlockers = cfg.allowCancelledBlockers;
+    if (cfg.haltOnVerifyFailure !== undefined) result.haltOnVerifyFailure = cfg.haltOnVerifyFailure;
   }
 
   return result;

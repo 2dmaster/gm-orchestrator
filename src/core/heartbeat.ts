@@ -47,6 +47,46 @@ export interface HeartbeatHandle {
  * - Updates `metadata.heartbeatAt` every `intervalMs`.
  * - `stop()` clears the interval and removes heartbeat metadata.
  */
+/**
+ * Merge a metadata patch into the task's existing metadata, then PUT the
+ * full result. GraphMemory's `updateTask` is REST-PUT semantics — sending
+ * `{ metadata: {...partial} }` replaces the whole metadata object, which
+ * would clobber fields written by Claude (e.g. `verifyFailedAt`,
+ * `verifyFailures`) or by other concurrent writers.
+ *
+ * This helper reads the latest task, merges the patch on top of the current
+ * metadata, and writes the union back. Keys whose value in the patch is
+ * `undefined` are removed from the result. This is a client-side merge —
+ * there is still a small race window between the GET and the PUT, but it
+ * is dramatically smaller than the previous unconditional overwrite.
+ */
+async function mergeMetadata(
+  gm: GraphMemoryPort,
+  taskId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  let current: Record<string, unknown> = {};
+  try {
+    const task = await gm.getTask(taskId);
+    if (task.metadata && typeof task.metadata === 'object') {
+      current = { ...task.metadata };
+    }
+  } catch {
+    // If we can't read, fall through and write the patch alone — better
+    // than dropping the heartbeat update entirely.
+  }
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      delete current[key];
+    } else {
+      current[key] = value;
+    }
+  }
+
+  await gm.updateTask(taskId, { metadata: current });
+}
+
 export function startHeartbeat(
   taskId: string,
   gm: GraphMemoryPort,
@@ -60,9 +100,7 @@ export function startHeartbeat(
     if (stopped) return;
     const meta: TaskHeartbeatMeta = { runId, heartbeatAt: Date.now() };
     try {
-      await gm.updateTask(taskId, {
-        metadata: { runId: meta.runId, heartbeatAt: meta.heartbeatAt },
-      });
+      await mergeMetadata(gm, taskId, { runId: meta.runId, heartbeatAt: meta.heartbeatAt });
     } catch (err) {
       logger.warn(`Heartbeat write failed for ${taskId}: ${String(err)}`);
     }
@@ -79,11 +117,11 @@ export function startHeartbeat(
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
-      // Clear heartbeat metadata so it's not mistaken for a zombie
+      // Clear heartbeat metadata so it's not mistaken for a zombie — but
+      // preserve any other metadata fields written during the run (e.g.
+      // verifyFailedAt, verifyFailures).
       try {
-        await gm.updateTask(taskId, {
-          metadata: { runId: null, heartbeatAt: null },
-        });
+        await mergeMetadata(gm, taskId, { runId: undefined, heartbeatAt: undefined });
       } catch (err) {
         logger.warn(`Heartbeat clear failed for ${taskId}: ${String(err)}`);
       }
@@ -159,10 +197,9 @@ async function applyZombiePolicy(
   gm: GraphMemoryPort,
   logger: Logger,
 ): Promise<void> {
-  // Clear heartbeat metadata regardless of policy
-  await gm.updateTask(task.id, {
-    metadata: { runId: null, heartbeatAt: null },
-  });
+  // Clear heartbeat metadata regardless of policy — preserving any other
+  // metadata fields the previous run wrote (e.g. verifyFailedAt).
+  await mergeMetadata(gm, task.id, { runId: undefined, heartbeatAt: undefined });
 
   switch (policy) {
     case 'reset-to-todo':

@@ -88,8 +88,11 @@ describe('startHeartbeat', () => {
     await handle.stop();
   });
 
-  it('stop() clears metadata', async () => {
-    const task = makeTask({ id: 'hb-3' });
+  it('stop() clears heartbeat keys without clobbering other metadata', async () => {
+    const task = makeTask({
+      id: 'hb-3',
+      metadata: { verifyFailedAt: 12345, verifyFailures: [{ hook: 'lint' }] },
+    });
     gm.addTask(task);
 
     const handle = startHeartbeat('hb-3', gm, fastConfig, silentLogger);
@@ -97,10 +100,55 @@ describe('startHeartbeat', () => {
 
     await handle.stop();
 
-    const lastCall = gm.calls.updateTask[gm.calls.updateTask.length - 1]!;
-    expect(lastCall.taskId).toBe('hb-3');
-    expect((lastCall.fields.metadata as Record<string, unknown>)?.['runId']).toBeNull();
-    expect((lastCall.fields.metadata as Record<string, unknown>)?.['heartbeatAt']).toBeNull();
+    const finalTask = await gm.getTask('hb-3');
+    const meta = finalTask.metadata as Record<string, unknown>;
+    expect(meta['runId']).toBeUndefined();
+    expect(meta['heartbeatAt']).toBeUndefined();
+    expect(meta['verifyFailedAt']).toBe(12345);
+    expect(meta['verifyFailures']).toEqual([{ hook: 'lint' }]);
+  });
+
+  it('initial write preserves pre-existing metadata fields', async () => {
+    const task = makeTask({
+      id: 'hb-merge',
+      metadata: { customField: 'preserved' },
+    });
+    gm.addTask(task);
+
+    const handle = startHeartbeat('hb-merge', gm, fastConfig, silentLogger);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const finalTask = await gm.getTask('hb-merge');
+    const meta = finalTask.metadata as Record<string, unknown>;
+    expect(meta['customField']).toBe('preserved');
+    expect(meta['runId']).toBe(handle.runId);
+    expect(typeof meta['heartbeatAt']).toBe('number');
+
+    await handle.stop();
+  });
+
+  it('heartbeat write does not clobber metadata written between writes', async () => {
+    const task = makeTask({ id: 'hb-race' });
+    gm.addTask(task);
+
+    const handle = startHeartbeat('hb-race', gm, fastConfig, silentLogger);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Simulate Claude writing to metadata mid-run
+    const current = await gm.getTask('hb-race');
+    await gm.updateTask('hb-race', {
+      metadata: { ...(current.metadata ?? {}), claudeWrote: 'value' },
+    });
+
+    // Trigger another heartbeat tick
+    await vi.advanceTimersByTimeAsync(fastConfig.intervalMs);
+
+    const finalTask = await gm.getTask('hb-race');
+    const meta = finalTask.metadata as Record<string, unknown>;
+    expect(meta['claudeWrote']).toBe('value');
+    expect(meta['runId']).toBe(handle.runId);
+
+    await handle.stop();
   });
 
   it('stop() is idempotent', async () => {
@@ -250,21 +298,40 @@ describe('recoverZombieTasks', () => {
     expect(result).not.toContain('alive-b');
   });
 
-  it('clears heartbeat metadata on recovered tasks', async () => {
+  it('ignores cancelled tasks (verify-failed tasks must not be re-run)', async () => {
+    gm.addTask(makeTask({
+      id: 'verify-failed-1',
+      status: 'cancelled',
+      tags: ['auto-verify-failed'],
+      metadata: { verifyFailedAt: 12345, verifyFailures: [{ hook: 'tests' }] },
+    }));
+
+    const result = await recoverZombieTasks(gm, config, silentLogger);
+
+    expect(result).toEqual([]);
+    expect(gm.calls.moveTask).toHaveLength(0);
+  });
+
+  it('clears heartbeat metadata on recovered tasks while preserving other fields', async () => {
     const staleTime = Date.now() - 120_000;
     gm.addTask(makeTask({
       id: 'zombie-clear',
       status: 'in_progress',
-      metadata: { runId: 'old-run', heartbeatAt: staleTime },
+      metadata: {
+        runId: 'old-run',
+        heartbeatAt: staleTime,
+        verifyFailedAt: 99999,
+        verifyFailures: [{ hook: 'tests' }],
+      },
     }));
 
     await recoverZombieTasks(gm, config, silentLogger);
 
-    const updateCall = gm.calls.updateTask.find(
-      (c) => c.taskId === 'zombie-clear',
-    );
-    expect(updateCall).toBeDefined();
-    expect((updateCall!.fields.metadata as Record<string, unknown>)?.['runId']).toBeNull();
-    expect((updateCall!.fields.metadata as Record<string, unknown>)?.['heartbeatAt']).toBeNull();
+    const finalTask = await gm.getTask('zombie-clear');
+    const meta = finalTask.metadata as Record<string, unknown>;
+    expect(meta['runId']).toBeUndefined();
+    expect(meta['heartbeatAt']).toBeUndefined();
+    expect(meta['verifyFailedAt']).toBe(99999);
+    expect(meta['verifyFailures']).toEqual([{ hook: 'tests' }]);
   });
 });

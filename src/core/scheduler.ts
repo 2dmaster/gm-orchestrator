@@ -139,7 +139,7 @@ function generateRequestId(): string {
 }
 
 function createEmptyStats(): SprintStats {
-  return { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 };
+  return { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, verifyFailed: 0, durationMs: 0 };
 }
 
 function mergeStats(a: SprintStats, b: SprintStats): SprintStats {
@@ -149,6 +149,7 @@ function mergeStats(a: SprintStats, b: SprintStats): SprintStats {
     retried: a.retried + b.retried,
     errors: a.errors + b.errors,
     skipped: a.skipped + b.skipped,
+    verifyFailed: a.verifyFailed + b.verifyFailed,
     durationMs: a.durationMs + b.durationMs,
   };
 }

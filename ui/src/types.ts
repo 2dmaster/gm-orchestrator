@@ -52,6 +52,7 @@ export interface SprintStats {
   retried: number;
   errors: number;
   skipped: number;
+  verifyFailed: number;
   durationMs: number;
 }
 

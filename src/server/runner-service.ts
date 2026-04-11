@@ -439,7 +439,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       return {
         slots: [],
         queue: [],
-        aggregateStats: { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, durationMs: 0 },
+        aggregateStats: { done: 0, cancelled: 0, retried: 0, errors: 0, skipped: 0, verifyFailed: 0, durationMs: 0 },
       };
     }
 

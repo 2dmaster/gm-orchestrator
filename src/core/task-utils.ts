@@ -1,4 +1,4 @@
-import type { Task, TaskPriority, TaskRef, CrossProjectResolver } from './types.js';
+import type { Task, TaskPriority, TaskRef, TaskStatus, CrossProjectResolver } from './types.js';
 
 const PRIORITY_ORDER: Record<TaskPriority, number> = {
   critical: 0,
@@ -7,12 +7,11 @@ const PRIORITY_ORDER: Record<TaskPriority, number> = {
   low: 3,
 };
 
-/**
- * Penalty added per unresolved `prefers_after` edge.
- * 0.5 is enough to demote within the same priority tier
- * but not enough to push a `high` task below a `low` one (gap = 1).
- */
-const SOFT_PREREQ_PENALTY = 0.5;
+const UNKNOWN_PRIORITY_SCORE = 4;
+
+function priorityScore(task: Task): number {
+  return PRIORITY_ORDER[task.priority] ?? UNKNOWN_PRIORITY_SCORE;
+}
 
 /**
  * Count how many `prefersAfter` refs are still unresolved
@@ -23,12 +22,26 @@ export function countUnresolvedSoftPrereqs(task: Task): number {
   return task.prefersAfter.filter((ref: TaskRef) => !isTerminal(ref.status)).length;
 }
 
+/**
+ * Sort order (strict axes, highest to lowest precedence):
+ *   1. priority tier (critical < high < medium < low < unknown)
+ *   2. fewer unresolved `prefersAfter` refs first (soft prereqs)
+ *   3. earliest dueDate first (missing = last)
+ *
+ * Soft prereqs are a separate axis — they can reorder tasks within a priority
+ * tier but never cross a priority boundary. A `high` task with ten unresolved
+ * soft prereqs still runs before a `medium` with none.
+ */
 export function sortByPriority(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
-    const pa = (PRIORITY_ORDER[a.priority] ?? 4) + countUnresolvedSoftPrereqs(a) * SOFT_PREREQ_PENALTY;
-    const pb = (PRIORITY_ORDER[b.priority] ?? 4) + countUnresolvedSoftPrereqs(b) * SOFT_PREREQ_PENALTY;
+    const pa = priorityScore(a);
+    const pb = priorityScore(b);
     if (pa !== pb) return pa - pb;
-    // Secondary: earliest dueDate
+
+    const sa = countUnresolvedSoftPrereqs(a);
+    const sb = countUnresolvedSoftPrereqs(b);
+    if (sa !== sb) return sa - sb;
+
     const da = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
     const db = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
     return da - db;
@@ -39,9 +52,25 @@ export function isTerminal(status: string): boolean {
   return status === 'done' || status === 'cancelled';
 }
 
-export function areBlockersResolved(task: Task): boolean {
+/**
+ * A blocker is resolved when it is `done`. By default `cancelled` upstream
+ * tasks are NOT treated as resolved — a cancellation means the prerequisite
+ * work was not completed, so dependents should not run. Pass
+ * `allowCancelledBlockers: true` to opt back into the looser semantics
+ * (useful when you intentionally want cancellations to unblock the chain).
+ */
+function isBlockerResolvedStatus(
+  status: TaskStatus | string | undefined,
+  allowCancelledBlockers: boolean,
+): boolean {
+  if (status === 'done') return true;
+  if (allowCancelledBlockers && status === 'cancelled') return true;
+  return false;
+}
+
+export function areBlockersResolved(task: Task, allowCancelledBlockers = false): boolean {
   if (!task.blockedBy?.length) return true;
-  return task.blockedBy.every((b) => isTerminal(b.status));
+  return task.blockedBy.every((b) => isBlockerResolvedStatus(b.status, allowCancelledBlockers));
 }
 
 /**
@@ -55,6 +84,7 @@ export function areBlockersResolved(task: Task): boolean {
 export async function areBlockersResolvedAsync(
   task: Task,
   resolver?: CrossProjectResolver,
+  allowCancelledBlockers = false,
 ): Promise<boolean> {
   if (!task.blockedBy?.length) return true;
 
@@ -63,10 +93,10 @@ export async function areBlockersResolvedAsync(
       // Cross-project blocker: fetch live status
       if (b.projectId && resolver) {
         const status = await resolver(b.projectId, b.id).catch(() => undefined);
-        return status != null && isTerminal(status);
+        return isBlockerResolvedStatus(status, allowCancelledBlockers);
       }
       // Same-project: use embedded status
-      return isTerminal(b.status);
+      return isBlockerResolvedStatus(b.status, allowCancelledBlockers);
     }),
   );
 

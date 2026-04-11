@@ -90,6 +90,82 @@ describe('runPostTaskHooks', () => {
     expect(hookRunner.calls[0]?.cwd).toBe('/app');
     expect(hookRunner.calls[0]?.timeoutMs).toBe(30_000);
   });
+
+  it('passes the per-hook timeoutMs to the runner via options', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'verify', command: 'make verify', timeoutMs: 15_000, onFailure: 'block' },
+    ];
+
+    await runPostTaskHooks(hooks, hookRunner, silentLogger, { defaultTimeoutMs: 999_000 });
+
+    // Per-hook timeout wins over the batch default.
+    expect(hookRunner.execOpts[0]?.timeoutMs).toBe(15_000);
+  });
+
+  it('falls back to defaultTimeoutMs when hook has no timeoutMs', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'verify', command: 'make verify', onFailure: 'block' },
+    ];
+
+    await runPostTaskHooks(hooks, hookRunner, silentLogger, { defaultTimeoutMs: 60_000 });
+
+    expect(hookRunner.execOpts[0]?.timeoutMs).toBe(60_000);
+  });
+
+  it('fails with timeout reason when hook exceeds its timeout', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'slow', command: 'sleep 60', timeoutMs: 10, onFailure: 'block' },
+      { name: 'next', command: 'echo never', onFailure: 'block' },
+    ];
+
+    hookRunner.setDelay('slow', 50);
+
+    const report = await runPostTaskHooks(hooks, hookRunner, silentLogger);
+
+    expect(report.passed).toBe(false);
+    expect(report.results).toHaveLength(1);
+    expect(report.results[0]?.result.failureReason).toBe('timeout');
+    // subsequent hooks must not run after a timeout
+    expect(hookRunner.calls.map((c) => c.name)).toEqual(['slow']);
+  });
+
+  it('stops and marks aborted when signal fires mid-batch', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'one', command: 'echo', onFailure: 'block' },
+      { name: 'two', command: 'sleep 30', onFailure: 'block' },
+    ];
+    hookRunner.setDelay('two', 500);
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+
+    const report = await runPostTaskHooks(hooks, hookRunner, silentLogger, {
+      signal: controller.signal,
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.aborted).toBe(true);
+    // 'one' completed, 'two' was aborted
+    expect(hookRunner.calls[0]?.name).toBe('one');
+    expect(hookRunner.calls[1]?.name).toBe('two');
+    expect(report.results[1]?.result.failureReason).toBe('aborted');
+  });
+
+  it('does not start hooks when signal is already aborted', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'one', command: 'echo', onFailure: 'block' },
+    ];
+    const controller = new AbortController();
+    controller.abort();
+
+    const report = await runPostTaskHooks(hooks, hookRunner, silentLogger, {
+      signal: controller.signal,
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.aborted).toBe(true);
+    expect(hookRunner.calls).toHaveLength(0);
+  });
 });
 
 // ── handleVerifyFailure ──────────────────────────────────────────────────
@@ -101,7 +177,7 @@ describe('handleVerifyFailure', () => {
     gm = new FakeGraphMemory();
   });
 
-  it('moves task to in_progress', async () => {
+  it('moves task to cancelled (stable terminal state for review)', async () => {
     const task = makeTask({ id: 'task-1', status: 'done' });
     gm.addTask(task);
 
@@ -121,9 +197,11 @@ describe('handleVerifyFailure', () => {
     );
 
     const moveCall = gm.calls.moveTask.find(
-      (c) => c.taskId === 'task-1' && c.status === 'in_progress',
+      (c) => c.taskId === 'task-1' && c.status === 'cancelled',
     );
     expect(moveCall).toBeDefined();
+    // Must NOT move back to in_progress (would be re-run on next startup).
+    expect(gm.calls.moveTask.find((c) => c.status === 'in_progress')).toBeUndefined();
   });
 
   it('adds auto-verify-failed tag', async () => {

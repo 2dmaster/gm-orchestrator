@@ -74,18 +74,34 @@ describe('areBlockersResolved', () => {
     expect(areBlockersResolved(makeBlockedTask('todo'))).toBe(false);
   });
 
-  it('returns true when blocker is cancelled (treated as resolved)', () => {
-    expect(areBlockersResolved(makeBlockedTask('cancelled'))).toBe(true);
+  it('returns false when blocker is cancelled by default', () => {
+    expect(areBlockersResolved(makeBlockedTask('cancelled'))).toBe(false);
   });
 
-  it('returns true when blockers are a mix of done and cancelled', () => {
+  it('returns false when blockers are a mix of done and cancelled (default)', () => {
     const task = makeTask({
       blockedBy: [
         { id: 'b1', title: 'B1', status: 'done' },
         { id: 'b2', title: 'B2', status: 'cancelled' },
       ],
     });
-    expect(areBlockersResolved(task)).toBe(true);
+    expect(areBlockersResolved(task)).toBe(false);
+  });
+
+  it('treats cancelled blocker as resolved when allowCancelledBlockers=true', () => {
+    expect(areBlockersResolved(makeBlockedTask('cancelled'), true)).toBe(true);
+    const mixed = makeTask({
+      blockedBy: [
+        { id: 'b1', title: 'B1', status: 'done' },
+        { id: 'b2', title: 'B2', status: 'cancelled' },
+      ],
+    });
+    expect(areBlockersResolved(mixed, true)).toBe(true);
+  });
+
+  it('still blocks on non-terminal statuses even with allowCancelledBlockers=true', () => {
+    expect(areBlockersResolved(makeBlockedTask('in_progress'), true)).toBe(false);
+    expect(areBlockersResolved(makeBlockedTask('todo'), true)).toBe(false);
   });
 });
 
@@ -152,20 +168,36 @@ describe('areBlockersResolvedAsync', () => {
     expect(await areBlockersResolvedAsync(task, resolver)).toBe(false);
   });
 
-  it('returns true when same-project blocker is cancelled', async () => {
+  it('returns false when same-project blocker is cancelled by default', async () => {
     const task = makeTask({
       blockedBy: [{ id: 'b1', title: 'B1', status: 'cancelled' }],
     });
-    expect(await areBlockersResolvedAsync(task)).toBe(true);
+    expect(await areBlockersResolvedAsync(task)).toBe(false);
   });
 
-  it('resolves cross-project blocker that is cancelled', async () => {
+  it('returns false when cross-project blocker is cancelled by default', async () => {
     const task = makeTask({
       blockedBy: [{ id: 'remote-1', title: 'Remote', status: 'in_progress', projectId: 'other-project' }],
     });
 
     const resolver: CrossProjectResolver = async (_pid, _tid) => 'cancelled';
-    expect(await areBlockersResolvedAsync(task, resolver)).toBe(true);
+    expect(await areBlockersResolvedAsync(task, resolver)).toBe(false);
+  });
+
+  it('treats cancelled blockers as resolved when allowCancelledBlockers=true (same-project)', async () => {
+    const task = makeTask({
+      blockedBy: [{ id: 'b1', title: 'B1', status: 'cancelled' }],
+    });
+    expect(await areBlockersResolvedAsync(task, undefined, true)).toBe(true);
+  });
+
+  it('treats cancelled blockers as resolved when allowCancelledBlockers=true (cross-project)', async () => {
+    const task = makeTask({
+      blockedBy: [{ id: 'remote-1', title: 'Remote', status: 'in_progress', projectId: 'other-project' }],
+    });
+
+    const resolver: CrossProjectResolver = async (_pid, _tid) => 'cancelled';
+    expect(await areBlockersResolvedAsync(task, resolver, true)).toBe(true);
   });
 
   it('uses embedded status for cross-project refs when no resolver', async () => {
@@ -240,7 +272,23 @@ describe('sortByPriority — soft prerequisites (prefers_after)', () => {
     expect(sorted.map((t) => t.priority)).toEqual(['high', 'high']);
   });
 
-  it('soft prereq does not push a high-priority task below a low-priority task', () => {
+  it('soft prereqs never invert priority — high with many soft deps still beats medium with none', () => {
+    const highWithManySoftDeps = makeTask({
+      id: 'H',
+      priority: 'high',
+      title: 'High with ten soft deps',
+      prefersAfter: Array.from({ length: 10 }, (_, i) => ({
+        id: `X${i}`,
+        title: `X${i}`,
+        status: 'todo' as const,
+      })),
+    });
+    const mediumClean = makeTask({ id: 'M', priority: 'medium', title: 'Medium clean' });
+    const sorted = sortByPriority([mediumClean, highWithManySoftDeps]);
+    expect(sorted.map((t) => t.id)).toEqual(['H', 'M']);
+  });
+
+  it('soft prereqs never invert priority — high with soft deps still beats low with none', () => {
     const highWithSoftDep = makeTask({
       id: 'H',
       priority: 'high',
@@ -249,11 +297,10 @@ describe('sortByPriority — soft prerequisites (prefers_after)', () => {
     });
     const lowTask = makeTask({ id: 'L', priority: 'low', title: 'Low task' });
     const sorted = sortByPriority([lowTask, highWithSoftDep]);
-    // high (1) + 0.5 penalty = 1.5 < low (3)
     expect(sorted.map((t) => t.id)).toEqual(['H', 'L']);
   });
 
-  it('multiple unresolved soft prereqs accumulate penalty', () => {
+  it('within the same priority, fewer unresolved soft prereqs wins', () => {
     const taskA = makeTask({ id: 'A', priority: 'high', title: 'Clean' });
     const taskB = makeTask({
       id: 'B',
@@ -265,8 +312,27 @@ describe('sortByPriority — soft prerequisites (prefers_after)', () => {
       ],
     });
     const sorted = sortByPriority([taskB, taskA]);
-    // A: 1, B: 1 + 2*0.5 = 2, so A first
     expect(sorted.map((t) => t.id)).toEqual(['A', 'B']);
+  });
+
+  it('unknown priority falls after all known priorities regardless of soft prereqs', () => {
+    const lowWithManySoftDeps = makeTask({
+      id: 'L',
+      priority: 'low',
+      title: 'Low with soft deps',
+      prefersAfter: [
+        { id: 'X', title: 'X', status: 'todo' },
+        { id: 'Y', title: 'Y', status: 'todo' },
+      ],
+    });
+    const unknownClean = makeTask({
+      id: 'U',
+      title: 'Unknown priority',
+    });
+    // Force an unknown priority value past the type system to simulate stale data.
+    (unknownClean as unknown as { priority: string }).priority = 'nonsense';
+    const sorted = sortByPriority([unknownClean, lowWithManySoftDeps]);
+    expect(sorted.map((t) => t.id)).toEqual(['L', 'U']);
   });
 
   it('areBlockersResolved ignores prefersAfter (soft deps are not hard blockers)', () => {
