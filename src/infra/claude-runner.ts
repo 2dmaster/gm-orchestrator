@@ -13,15 +13,15 @@ export class ClaudeRunner implements ClaudeRunnerPort {
    * detection — it polls GraphMemory task status instead. The session
    * promise is awaited only for cleanup after the poller signals done.
    */
-  async run(task: Task, config: OrchestratorConfig): Promise<void> {
+  async run(task: Task, config: OrchestratorConfig, runId: string): Promise<void> {
     const active = getActiveProject(config);
-    const prompt = buildPrompt(task, { projectId: active?.projectId ?? '' });
+    const prompt = buildPrompt(task, { projectId: active?.projectId ?? '', runId });
     const args = ['--print', '--dangerously-skip-permissions', ...config.claudeArgs, prompt];
 
     return new Promise((resolve, reject) => {
       const proc = spawn('claude', args, {
         stdio: 'inherit',
-        env: process.env,
+        env: { ...process.env, ORCHESTRATOR_RUN_ID: runId },
       });
 
       proc.on('close', (code) => {

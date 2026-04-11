@@ -1,7 +1,11 @@
 import type {
   GraphMemoryPort,
+  HookRunnerPort,
+  PostTaskHook,
+  HookExecResult,
   Task,
   TaskStatus,
+  TaskLinkKind,
   Epic,
   EpicStatus,
   CrossProjectResolver,
@@ -20,10 +24,12 @@ export class FakeGraphMemory implements GraphMemoryPort {
     moveTask: Array<{ taskId: string; status: TaskStatus }>;
     moveEpic: Array<{ epicId: string; status: EpicStatus }>;
     updateTask: Array<{ taskId: string; fields: Partial<Task> }>;
+    linkTask: Array<{ fromId: string; toId: string; kind: TaskLinkKind; targetProjectId?: string }>;
   } = {
     moveTask: [],
     moveEpic: [],
     updateTask: [],
+    linkTask: [],
   };
 
   addTask(task: Task): this {
@@ -96,6 +102,44 @@ export class FakeGraphMemory implements GraphMemoryPort {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     return task.status;
   }
+
+  async linkTask(opts: {
+    fromId: string;
+    toId: string;
+    kind: TaskLinkKind;
+    targetProjectId?: string;
+  }): Promise<void> {
+    this.calls.linkTask.push(opts);
+
+    // Simulate link creation: add to blockedBy/blocks/related on the source task
+    const fromTask = this.tasks.get(opts.fromId);
+    if (!fromTask) throw new Error(`Task not found: ${opts.fromId}`);
+
+    const ref = {
+      id: opts.toId,
+      title: opts.toId,
+      status: 'todo' as TaskStatus,
+      ...(opts.targetProjectId ? { projectId: opts.targetProjectId } : {}),
+    };
+
+    if (opts.kind === 'blocks') {
+      // fromTask blocks toId → add toId to fromTask.blocks
+      const blocks = fromTask.blocks ?? [];
+      this.tasks.set(opts.fromId, { ...fromTask, blocks: [...blocks, ref] });
+    } else if (opts.kind === 'related_to') {
+      const related = fromTask.related ?? [];
+      this.tasks.set(opts.fromId, { ...fromTask, related: [...related, ref] });
+    } else if (opts.kind === 'prefers_after') {
+      // toId prefers to run after fromId → add fromId as soft prereq on toId
+      const toTask = this.tasks.get(opts.toId);
+      if (toTask) {
+        const prefersAfter = toTask.prefersAfter ?? [];
+        const fromRef = { id: opts.fromId, title: opts.fromId, status: fromTask.status };
+        this.tasks.set(opts.toId, { ...toTask, prefersAfter: [...prefersAfter, fromRef] });
+      }
+    }
+    // subtask_of: structural, less common to track on from side
+  }
 }
 
 /**
@@ -161,9 +205,37 @@ export class FakePoller {
  * Fake runner — records what it was asked to run.
  */
 export class FakeRunner {
-  calls: Array<{ taskId: string }> = [];
+  calls: Array<{ taskId: string; runId?: string }> = [];
 
-  async run(task: { id: string }): Promise<void> {
-    this.calls.push({ taskId: task.id });
+  async run(task: { id: string }, _config: unknown, runId?: string): Promise<void> {
+    this.calls.push({ taskId: task.id, runId });
+  }
+}
+
+/**
+ * Fake hook runner — returns preset results for post-task verification hooks.
+ * Defaults to success for all hooks unless configured otherwise.
+ */
+export class FakeHookRunner implements HookRunnerPort {
+  /** Preset results by hook name. Missing names default to success. */
+  private results = new Map<string, HookExecResult>();
+  /** Record of all hook executions for assertions. */
+  calls: PostTaskHook[] = [];
+
+  /** Configure a specific hook name to return a given result. */
+  setResult(hookName: string, result: HookExecResult): this {
+    this.results.set(hookName, result);
+    return this;
+  }
+
+  /** Convenience: configure a hook name to fail. */
+  setFailure(hookName: string, exitCode = 1, stderr = 'hook failed'): this {
+    this.results.set(hookName, { success: false, exitCode, stdout: '', stderr });
+    return this;
+  }
+
+  async exec(hook: PostTaskHook): Promise<HookExecResult> {
+    this.calls.push(hook);
+    return this.results.get(hook.name) ?? { success: true, exitCode: 0, stdout: '', stderr: '' };
   }
 }

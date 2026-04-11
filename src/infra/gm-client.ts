@@ -2,6 +2,7 @@ import type {
   GraphMemoryPort,
   Task,
   TaskStatus,
+  TaskLinkKind,
   Epic,
   EpicStatus,
   CrossProjectResolver,
@@ -77,6 +78,15 @@ export class GraphMemoryClient implements GraphMemoryPort {
   async getTaskStatus(taskId: string): Promise<TaskStatus> {
     const task = await this.getTask(taskId);
     return task.status;
+  }
+
+  async linkTask(opts: {
+    fromId: string;
+    toId: string;
+    kind: TaskLinkKind;
+    targetProjectId?: string;
+  }): Promise<void> {
+    await this.post('/tasks/link', opts);
   }
 
   // ── Epics ─────────────────────────────────────────────────────────────

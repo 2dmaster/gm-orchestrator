@@ -97,4 +97,27 @@ describe('buildPrompt', () => {
     expect(typeof prompt).toBe('string');
     expect(prompt.length).toBeGreaterThan(100);
   });
+
+  it('includes idempotency guard when runId is provided', () => {
+    const task = makeTask({ id: 'task-idem' });
+    const prompt = buildPrompt(task, { ...CTX, runId: 'run-abc-123' });
+    expect(prompt).toContain('Idempotency Guard');
+    expect(prompt).toContain('run-abc-123');
+    expect(prompt).toContain('ORCHESTRATOR_RUN_ID');
+    expect(prompt).toContain('metadata.runId');
+  });
+
+  it('omits idempotency guard when runId is not provided', () => {
+    const task = makeTask({ id: 'task-no-idem' });
+    const prompt = buildPrompt(task, CTX);
+    expect(prompt).not.toContain('Idempotency Guard');
+    expect(prompt).not.toContain('ORCHESTRATOR_RUN_ID');
+  });
+
+  it('idempotency guard references the correct task ID', () => {
+    const task = makeTask({ id: 'task-check' });
+    const prompt = buildPrompt(task, { ...CTX, runId: 'run-xyz' });
+    expect(prompt).toContain('tasks_get("task-check")');
+    expect(prompt).toContain('exit immediately');
+  });
 });

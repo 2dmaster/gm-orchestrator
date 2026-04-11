@@ -1,4 +1,4 @@
-import type { Task, TaskPriority, CrossProjectResolver } from './types.js';
+import type { Task, TaskPriority, TaskRef, CrossProjectResolver } from './types.js';
 
 const PRIORITY_ORDER: Record<TaskPriority, number> = {
   critical: 0,
@@ -7,10 +7,26 @@ const PRIORITY_ORDER: Record<TaskPriority, number> = {
   low: 3,
 };
 
+/**
+ * Penalty added per unresolved `prefers_after` edge.
+ * 0.5 is enough to demote within the same priority tier
+ * but not enough to push a `high` task below a `low` one (gap = 1).
+ */
+const SOFT_PREREQ_PENALTY = 0.5;
+
+/**
+ * Count how many `prefersAfter` refs are still unresolved
+ * (i.e. not in a terminal state: done or cancelled).
+ */
+export function countUnresolvedSoftPrereqs(task: Task): number {
+  if (!task.prefersAfter?.length) return 0;
+  return task.prefersAfter.filter((ref: TaskRef) => !isTerminal(ref.status)).length;
+}
+
 export function sortByPriority(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
-    const pa = PRIORITY_ORDER[a.priority] ?? 4;
-    const pb = PRIORITY_ORDER[b.priority] ?? 4;
+    const pa = (PRIORITY_ORDER[a.priority] ?? 4) + countUnresolvedSoftPrereqs(a) * SOFT_PREREQ_PENALTY;
+    const pb = (PRIORITY_ORDER[b.priority] ?? 4) + countUnresolvedSoftPrereqs(b) * SOFT_PREREQ_PENALTY;
     if (pa !== pb) return pa - pb;
     // Secondary: earliest dueDate
     const da = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
@@ -25,7 +41,7 @@ export function isTerminal(status: string): boolean {
 
 export function areBlockersResolved(task: Task): boolean {
   if (!task.blockedBy?.length) return true;
-  return task.blockedBy.every((b) => b.status === 'done');
+  return task.blockedBy.every((b) => isTerminal(b.status));
 }
 
 /**
@@ -47,10 +63,10 @@ export async function areBlockersResolvedAsync(
       // Cross-project blocker: fetch live status
       if (b.projectId && resolver) {
         const status = await resolver(b.projectId, b.id).catch(() => undefined);
-        return status === 'done';
+        return status != null && isTerminal(status);
       }
       // Same-project: use embedded status
-      return b.status === 'done';
+      return isTerminal(b.status);
     }),
   );
 

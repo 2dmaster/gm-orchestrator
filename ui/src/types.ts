@@ -3,6 +3,7 @@
 export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type EpicStatus = 'open' | 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type TaskLinkKind = 'blocks' | 'subtask_of' | 'related_to' | 'prefers_after';
 
 export interface TaskRef {
   id: string;
@@ -29,6 +30,7 @@ export interface Task {
   blockedBy?: TaskRef[];
   blocks?: TaskRef[];
   related?: TaskRef[];
+  prefersAfter?: TaskRef[];
 }
 
 export interface Epic {

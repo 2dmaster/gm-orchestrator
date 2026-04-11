@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { runSprint, runEpic, collectCrossProjectEpicTasks } from '../../src/core/orchestrator.js';
-import { FakeGraphMemory, FakePoller, FakeRunner, FakeCrossProjectResolver } from '../fixtures/fakes.js';
+import { FakeGraphMemory, FakePoller, FakeRunner, FakeCrossProjectResolver, FakeHookRunner } from '../fixtures/fakes.js';
 import { silentLogger } from '../../src/infra/logger.js';
 import { makeTask, makeEpic } from '../fixtures/factories.js';
-import type { OrchestratorConfig, CrossProjectResolver } from '../../src/core/types.js';
+import type { OrchestratorConfig, CrossProjectResolver, PostTaskHook } from '../../src/core/types.js';
 
 const BASE_CONFIG: OrchestratorConfig = {
   projects: [{ baseUrl: 'http://localhost:3000', projectId: 'test' }],
@@ -16,8 +16,8 @@ const BASE_CONFIG: OrchestratorConfig = {
   dryRun: false,
 };
 
-function makePorts(gm: FakeGraphMemory, poller: FakePoller, runner: FakeRunner) {
-  return { gm, runner, poller, logger: silentLogger };
+function makePorts(gm: FakeGraphMemory, poller: FakePoller, runner: FakeRunner, hookRunner?: FakeHookRunner) {
+  return { gm, runner, poller, logger: silentLogger, ...(hookRunner ? { hookRunner } : {}) };
 }
 
 /** Helper: create a pre-wired poller that knows about the gm instance */
@@ -182,6 +182,43 @@ describe('runSprint', () => {
   it('returns duration in stats', async () => {
     const stats = await runSprint(makePorts(gm, poller, runner), BASE_CONFIG);
     expect(stats.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('passes a unique runId to the runner for idempotency', async () => {
+    const t1 = makeTask({ id: 'idem-1' });
+    const t2 = makeTask({ id: 'idem-2' });
+    gm.addTask(t1);
+    gm.addTask(t2);
+    poller.setResult('idem-1', 'done');
+    poller.setResult('idem-2', 'done');
+
+    await runSprint(makePorts(gm, poller, runner), BASE_CONFIG);
+
+    // Each task run should receive a unique runId (UUID)
+    expect(runner.calls).toHaveLength(2);
+    const runId1 = runner.calls[0]?.runId;
+    const runId2 = runner.calls[1]?.runId;
+    expect(runId1).toBeTruthy();
+    expect(runId2).toBeTruthy();
+    expect(runId1).not.toBe(runId2);
+  });
+
+  it('writes runId to task metadata via heartbeat before spawning runner', async () => {
+    const task = makeTask({ id: 'idem-meta' });
+    gm.addTask(task);
+    poller.setResult('idem-meta', 'done');
+
+    await runSprint(makePorts(gm, poller, runner), BASE_CONFIG);
+
+    // Heartbeat should have written metadata.runId
+    const metaCall = gm.calls.updateTask.find(
+      (c) => c.taskId === 'idem-meta' && (c.fields.metadata as Record<string, unknown>)?.['runId'] != null,
+    );
+    expect(metaCall).toBeDefined();
+
+    // The runId written to metadata should match the one passed to the runner
+    const writtenRunId = (metaCall!.fields.metadata as Record<string, unknown>)?.['runId'];
+    expect(writtenRunId).toBe(runner.calls[0]?.runId);
   });
 });
 
@@ -457,5 +494,177 @@ describe('collectCrossProjectEpicTasks', () => {
     // Only the home task should be collected
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0]?.id).toBe('home-t1');
+  });
+});
+
+// ── Post-Task Verification Hooks ──────────────────────────────────────────
+
+describe('post-task verification hooks', () => {
+  let gm: FakeGraphMemory;
+  let poller: FakePoller;
+  let runner: FakeRunner;
+  let hookRunner: FakeHookRunner;
+
+  const VERIFY_HOOK: PostTaskHook = {
+    name: 'make-verify',
+    command: 'make verify',
+    onFailure: 'block',
+  };
+
+  beforeEach(() => {
+    gm = new FakeGraphMemory();
+    poller = makePoller(gm);
+    runner = new FakeRunner();
+    hookRunner = new FakeHookRunner();
+  });
+
+  it('accepts task completion when all hooks pass', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(stats.done).toBe(1);
+    expect(stats.errors).toBe(0);
+    expect(hookRunner.calls).toHaveLength(1);
+    expect(hookRunner.calls[0]?.name).toBe('make-verify');
+  });
+
+  it('rejects task when blocking hook fails — marks verify_failed', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+    hookRunner.setFailure('make-verify', 1, 'tests failed');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(stats.done).toBe(0);
+    expect(stats.errors).toBe(1);
+  });
+
+  it('adds auto-verify-failed tag to task on hook failure', async () => {
+    gm.addTask(makeTask({ id: 'task-1', tags: ['backend'] }));
+    poller.setResult('task-1', 'done');
+    hookRunner.setFailure('make-verify', 1, 'build error');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    // Find the updateTask call that has tags (not the heartbeat metadata-only calls)
+    const updateCall = gm.calls.updateTask.find(
+      (c) => c.taskId === 'task-1' && c.fields.tags !== undefined,
+    );
+    expect(updateCall?.fields.tags).toContain('auto-verify-failed');
+    expect(updateCall?.fields.tags).toContain('backend');
+  });
+
+  it('halts sprint when verify fails — does not run subsequent tasks', async () => {
+    gm.addTask(makeTask({ id: 'task-1', priority: 'critical' }));
+    gm.addTask(makeTask({ id: 'task-2', priority: 'low' }));
+    poller.setResult('task-1', 'done');
+    poller.setResult('task-2', 'done');
+    hookRunner.setFailure('make-verify', 1, 'fail');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    // task-1 fails verify, sprint should halt and not run task-2
+    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls[0]?.taskId).toBe('task-1');
+    expect(stats.errors).toBe(1);
+    expect(stats.done).toBe(0);
+  });
+
+  it('does not retry verify_failed tasks', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+    hookRunner.setFailure('make-verify', 1, 'fail');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK], maxRetries: 3 };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    // Should NOT retry — verify_failed is not retryable
+    expect(runner.calls).toHaveLength(1);
+    expect(stats.retried).toBe(0);
+    expect(stats.errors).toBe(1);
+  });
+
+  it('skips hooks when no hookRunner is provided', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+
+    // Config has hooks but no hookRunner in ports
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    const stats = await runSprint(makePorts(gm, poller, runner), config);
+
+    expect(stats.done).toBe(1); // hooks silently skipped
+  });
+
+  it('skips hooks when postTaskHooks is empty', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [] };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(stats.done).toBe(1);
+    expect(hookRunner.calls).toHaveLength(0);
+  });
+
+  it('runs multiple hooks in order, stops on first block failure', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'lint', command: 'npm run lint', onFailure: 'block' },
+      { name: 'test', command: 'npm test', onFailure: 'block' },
+      { name: 'build', command: 'npm run build', onFailure: 'block' },
+    ];
+    hookRunner.setFailure('test', 1, 'test failure');
+
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: hooks };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(stats.errors).toBe(1);
+    // lint ran (passed), test ran (failed), build never ran
+    expect(hookRunner.calls.map((c) => c.name)).toEqual(['lint', 'test']);
+  });
+
+  it('continues past warn-mode hook failures', async () => {
+    const hooks: PostTaskHook[] = [
+      { name: 'lint', command: 'npm run lint', onFailure: 'warn' },
+      { name: 'test', command: 'npm test', onFailure: 'block' },
+    ];
+    hookRunner.setFailure('lint', 1, 'lint warnings');
+
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'done');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: hooks };
+    const stats = await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(stats.done).toBe(1); // warn failure doesn't block
+    expect(hookRunner.calls).toHaveLength(2);
+  });
+
+  it('does not run hooks for cancelled tasks', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'cancelled');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(hookRunner.calls).toHaveLength(0);
+  });
+
+  it('does not run hooks for timed-out tasks', async () => {
+    gm.addTask(makeTask({ id: 'task-1' }));
+    poller.setResult('task-1', 'timeout');
+
+    const config = { ...BASE_CONFIG, postTaskHooks: [VERIFY_HOOK] };
+    await runSprint(makePorts(gm, poller, runner, hookRunner), config);
+
+    expect(hookRunner.calls).toHaveLength(0);
   });
 });

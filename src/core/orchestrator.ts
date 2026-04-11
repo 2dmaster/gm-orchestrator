@@ -2,6 +2,7 @@ import type {
   GraphMemoryPort,
   ClaudeRunnerPort,
   TaskPollerPort,
+  HookRunnerPort,
   OrchestratorConfig,
   SprintStats,
   Task,
@@ -11,6 +12,8 @@ import type {
 } from './types.js';
 import { getActiveProject } from './types.js';
 import { sortByPriority, areBlockersResolved, areBlockersResolvedAsync } from './task-utils.js';
+import { startHeartbeat, resolveHeartbeatConfig } from './heartbeat.js';
+import { runPostTaskHooks, handleVerifyFailure } from './post-task-hooks.js';
 import type { Logger } from '../infra/logger.js';
 
 interface Ports {
@@ -24,6 +27,12 @@ interface Ports {
    * When provided, `findNextRunnable` will check blockers in other projects.
    */
   crossProjectResolver?: CrossProjectResolver;
+  /**
+   * Optional hook runner for post-task verification.
+   * When provided along with config.postTaskHooks, hooks are executed
+   * after a task is marked done — before the orchestrator accepts completion.
+   */
+  hookRunner?: HookRunnerPort;
 }
 
 /**
@@ -86,10 +95,17 @@ export async function runSprint(
 
     const result = await runOneTask(next, ports, config);
 
-    await handleResult(result, next, {
+    const halt = await handleResult(result, next, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
     });
+
+    if (halt) {
+      logger.warn('Sprint halted due to verification failure');
+      stats.durationMs = Date.now() - startTime;
+      logStats(logger, stats);
+      return stats;
+    }
 
     await sleep(config.pauseMs);
   }
@@ -156,10 +172,17 @@ export async function runEpic(
 
     const result = await runOneTask(next, ports, config);
 
-    await handleResult(result, next, {
+    const halt = await handleResult(result, next, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
     });
+
+    if (halt) {
+      logger.warn('Epic halted due to verification failure');
+      stats.durationMs = Date.now() - startTime;
+      logStats(logger, stats);
+      return stats;
+    }
 
     await sleep(config.pauseMs);
   }
@@ -215,10 +238,15 @@ export async function runTasks(
 
     const result = await runOneTask(task, ports, config);
 
-    await handleResult(result, task, {
+    const halt = await handleResult(result, task, {
       gm, logger, stats, failedIds, retryCounts,
       maxRetries: config.maxRetries,
     });
+
+    if (halt) {
+      logger.warn('Task run halted due to verification failure');
+      break;
+    }
 
     await sleep(config.pauseMs);
   }
@@ -258,9 +286,10 @@ async function findNextRunnable(
 
 async function runOneTask(
   task: Task,
-  { gm, runner, poller, logger, signal }: Ports,
+  ports: Ports,
   config: OrchestratorConfig
 ): Promise<TaskRunResult> {
+  const { gm, runner, poller, logger, signal } = ports;
   logger.task(task);
 
   // Mark in_progress (idempotent)
@@ -276,33 +305,58 @@ async function runOneTask(
     return 'dry_run';
   }
 
-  // Spawn Claude Code session (fire and forget — poller drives completion)
-  const sessionPromise = runner.run(task, config).catch((e: unknown) => {
-    logger.warn(`Claude session error: ${String(e)}`);
-  });
+  // Start heartbeat for crash recovery
+  const hbConfig = resolveHeartbeatConfig(config.heartbeat);
+  const heartbeat = startHeartbeat(task.id, gm, hbConfig, logger);
 
-  // Poll GraphMemory until task reaches terminal state
-  const pollResult = await poller.waitForCompletion(task.id, {
-    timeoutMs: config.timeoutMs,
-    ...(signal ? { signal } : {}),
-  });
+  try {
+    // Spawn Claude Code session (fire and forget — poller drives completion)
+    const sessionPromise = runner.run(task, config, heartbeat.runId).catch((e: unknown) => {
+      logger.warn(`Claude session error: ${String(e)}`);
+    });
 
-  await sessionPromise; // let process clean up
+    // Poll GraphMemory until task reaches terminal state
+    const pollResult = await poller.waitForCompletion(task.id, {
+      timeoutMs: config.timeoutMs,
+      ...(signal ? { signal } : {}),
+    });
 
-  if (pollResult === 'timeout') {
-    logger.error(`Timeout: "${task.title}" (${task.id})`);
-    return 'timeout';
+    await sessionPromise; // let process clean up
+
+    if (pollResult === 'timeout') {
+      logger.error(`Timeout: "${task.title}" (${task.id})`);
+      return 'timeout';
+    }
+
+    if (pollResult === 'done') {
+      // Run post-task verification hooks (if configured)
+      const hooks = config.postTaskHooks;
+      if (hooks?.length && ports.hookRunner) {
+        logger.info(`Running ${hooks.length} post-task hook(s) for "${task.title}"`);
+        const report = await runPostTaskHooks(hooks, ports.hookRunner, logger);
+
+        if (!report.passed) {
+          await handleVerifyFailure(task, report, gm, logger);
+          return 'verify_failed';
+        }
+      }
+
+      logger.success(`Done: "${task.title}"`);
+    } else {
+      logger.warn(`Cancelled: "${task.title}"`);
+    }
+
+    return pollResult;
+  } finally {
+    // Always stop the heartbeat — whether success, failure, or abort
+    await heartbeat.stop();
   }
-
-  if (pollResult === 'done') {
-    logger.success(`Done: "${task.title}"`);
-  } else {
-    logger.warn(`Cancelled: "${task.title}"`);
-  }
-
-  return pollResult;
 }
 
+/**
+ * Processes a task run result. Returns true if the sprint/epic should halt
+ * (e.g. on verify_failed — don't continue to next task).
+ */
 async function handleResult(
   result: TaskRunResult,
   task: Task,
@@ -314,20 +368,28 @@ async function handleResult(
     retryCounts: Map<string, number>;
     maxRetries: number;
   }
-): Promise<void> {
+): Promise<boolean> {
   const { gm, logger, stats, failedIds, retryCounts, maxRetries } = ctx;
 
   if (result === 'done' || result === 'dry_run') {
     stats.done++;
     logger.taskResult(task, 'done');
-    return;
+    return false;
+  }
+
+  if (result === 'verify_failed') {
+    stats.errors++;
+    failedIds.add(task.id);
+    logger.taskResult(task, 'verify_failed');
+    logger.error(`Halting — post-task verification failed for "${task.title}" (${task.id})`);
+    return true; // halt the sprint/epic
   }
 
   if (result === 'cancelled') {
     stats.cancelled++;
     failedIds.add(task.id);
     logger.taskResult(task, 'cancelled');
-    return;
+    return false;
   }
 
   // timeout | error
@@ -345,6 +407,8 @@ async function handleResult(
     logger.error(`Giving up on: ${task.id}`);
     await gm.moveTask(task.id, 'cancelled').catch(() => {});
   }
+
+  return false;
 }
 
 /**

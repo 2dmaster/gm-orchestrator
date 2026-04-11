@@ -198,6 +198,139 @@ Resolved in order — later sources override earlier:
 | `claudeArgs` | `string[]` | `[]`              | Extra args for `claude --print`  |
 | `model`      | `string`   |                   | Claude model override (e.g. `claude-sonnet-4-6`) |
 | `dryRun`     | `boolean`  | `false`           | Preview prompts, don't run       |
+| `postTaskHooks` | `PostTaskHook[]` | `[]`        | Verification commands run after each task (see [Post-task verification hooks](#post-task-verification-hooks)) |
+| `heartbeat`  | `HeartbeatConfig` |            | Heartbeat / zombie recovery settings (see [Crash recovery](#crash-recovery-heartbeat)) |
+
+---
+
+## Task dependencies
+
+The orchestrator respects task blockers when choosing which task to run next.
+A task whose blockers are unresolved is **skipped** regardless of its priority.
+
+### Marking a blocker
+
+Use `tasks_link` with `kind="blocks"`:
+
+```
+tasks_link(fromId="U13", toId="U7", kind="blocks")
+```
+
+This means **U13 blocks U7** — the orchestrator will not start U7 until U13 reaches `done` (or `cancelled`).
+
+**Concrete example:** task U13 creates a lock helper used by U7 and U9. Link U13→U7 and U13→U9 with `kind="blocks"` so the orchestrator picks U13 first, even if U7 and U9 have higher priority.
+
+### Link kinds
+
+GraphMemory supports four link kinds between tasks:
+
+| Kind | Effect on orchestrator |
+|------|----------------------|
+| `blocks` | **Enforced.** Target task is skipped until the source is terminal (`done` / `cancelled`). Checked by `areBlockersResolved(task)`. |
+| `prefers_after` | **Soft.** Target task is deprioritised while the source is still active, but **not blocked**. If the source is cancelled or stuck, the target can still run. Useful for "ideally A before B" without a hard gate. |
+| `subtask_of` | Structural only — groups tasks under a parent. Does **not** affect scheduling order. |
+| `related_to` | Informational only — no effect on scheduling. |
+
+### Cancelled blockers
+
+A blocker in `cancelled` state is treated as **resolved**, same as `done`. Semantically, "this work is not going to happen" is equivalent to "this work is already accomplished" from the dependent task's perspective. Cancelling a blocker unblocks everything downstream — no ghost-blocked tasks stalling forever.
+
+### Cross-project blockers
+
+For multi-project setups, a blocker can live in a different GraphMemory project. Pass `targetProjectId` when linking:
+
+```
+tasks_link(fromId="U-API-1", toId="U6", kind="blocks", targetProjectId="MixPlacesEcommerce")
+```
+
+This means **U-API-1 in the current project blocks U6 in `MixPlacesEcommerce`**. The orchestrator resolves blocker status across all configured projects, so you can run multiple epics in parallel and let the scheduler interleave tasks based on real-time readiness — no need to sequence epics by hand.
+
+### Programmatic check
+
+```ts
+import { areBlockersResolved } from 'gm-orchestrator';
+
+// Returns true when every task linked with kind="blocks" is done or cancelled
+areBlockersResolved(task); // boolean
+```
+
+---
+
+## Post-task verification hooks
+
+After a task is marked `done`, the orchestrator can run user-configurable verification commands before accepting the `done` state. This provides a hard gate on quality — "task done = runtime verified" is enforced mechanically, not by convention.
+
+Hooks run **in the orchestrator process**, not inside the spawned Claude session. A failing session cannot skip its own verification.
+
+### Configuration
+
+```json
+{
+  "postTaskHooks": [
+    {
+      "name": "make-verify",
+      "command": "make verify",
+      "cwd": "/path/to/project",
+      "timeoutMs": 600000,
+      "onFailure": "block"
+    },
+    {
+      "name": "lint",
+      "command": "npm run lint",
+      "onFailure": "warn"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Human-readable label for logs. |
+| `command` | `string` | Shell command to execute. |
+| `cwd` | `string` | Working directory (default: `process.cwd()`). |
+| `timeoutMs` | `number` | Timeout in ms (default: 600000 = 10 min). |
+| `onFailure` | `'block' \| 'warn'` | `block` halts the sprint, `warn` logs and continues. |
+
+### On failure (`onFailure: "block"`)
+
+1. Task is moved back from `done` to `in_progress`
+2. An `auto-verify-failed` tag is added
+3. Last 50 lines of stdout/stderr are attached to `task.metadata.verifyFailures`
+4. The sprint halts — orchestrator does **not** pick the next task until the user intervenes
+
+Hooks run sequentially in the order declared. Multiple hooks per project (e.g. lint + build + test as separate entries) are supported.
+
+---
+
+## Crash recovery (heartbeat)
+
+If the orchestrator process dies mid-task (OS reboot, OOM, pkill), the task is left stuck in `in_progress` forever. Heartbeats give the orchestrator a way to tell live work from zombie state.
+
+While a task is running, the orchestrator writes `metadata.runId` and `metadata.heartbeatAt` on a 30s interval. On startup, it scans all `in_progress` tasks: any task with a stale heartbeat (older than 2× the interval) or no heartbeat at all is treated as a zombie and recovered according to the configured policy.
+
+### Configuration
+
+```json
+{
+  "heartbeat": {
+    "intervalMs": 30000,
+    "staleThresholdMs": 60000,
+    "zombiePolicy": "reset-to-todo"
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `intervalMs` | `30000` | How often to write heartbeat metadata. |
+| `staleThresholdMs` | `2 × intervalMs` | Age threshold for zombie detection. |
+| `zombiePolicy` | `reset-to-todo` | `reset-to-todo`, `move-to-review`, or `cancel`. |
+
+`reset-to-todo` is the safe default: the zombie task goes back in the queue and will be re-picked with a fresh Claude session. Given per-task isolation, redoing the work is usually fine.
+
+### Idempotency (double-spawn safety)
+
+Each run gets a unique `runId` UUID, exposed to the spawned Claude session via the `ORCHESTRATOR_RUN_ID` environment variable and written to `task.metadata.runId`. Before making destructive changes, a well-behaved subagent can call `tasks_get` and compare `metadata.runId` to its own `ORCHESTRATOR_RUN_ID` — if they differ, another run has superseded this one and it should exit cleanly. This protects against race conditions between two orchestrator instances or restarts that happen during the narrow window between "pick task" and "move to in_progress".
 
 ---
 

@@ -201,11 +201,17 @@ async function main(): Promise<void> {
     ...(activeProj?.apiKey !== undefined && { apiKey: activeProj.apiKey }),
   });
 
+  // Lazy-import HookRunner only when hooks are configured
+  const hookRunner = config.postTaskHooks?.length
+    ? new (await import('../infra/hook-runner.js')).HookRunner()
+    : undefined;
+
   const ports = {
     gm,
     runner: new ClaudeRunner(),
     poller: new TaskPoller(gm),
     logger: consoleLogger,
+    ...(hookRunner ? { hookRunner } : {}),
   };
 
   if (effectiveCommand === 'status') {

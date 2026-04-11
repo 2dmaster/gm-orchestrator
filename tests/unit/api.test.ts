@@ -246,6 +246,110 @@ describe('API routes', () => {
     });
   });
 
+  // ── POST /api/projects/:id/tasks/link ──────────────────────────────
+
+  describe('POST /api/projects/:id/tasks/link', () => {
+    it('creates a same-project task link', async () => {
+      await startApp();
+      testApp.gm.addTask(makeTask({ id: 'task-a' }));
+      testApp.gm.addTask(makeTask({ id: 'task-b' }));
+
+      const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromId: 'task-a', toId: 'task-b', kind: 'blocks' }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.fromId).toBe('task-a');
+      expect(body.toId).toBe('task-b');
+      expect(body.kind).toBe('blocks');
+      expect(body.targetProjectId).toBeNull();
+      expect(testApp.gm.calls.linkTask).toHaveLength(1);
+      expect(testApp.gm.calls.linkTask[0]).toEqual({
+        fromId: 'task-a',
+        toId: 'task-b',
+        kind: 'blocks',
+      });
+    });
+
+    it('creates a cross-project task link with targetProjectId', async () => {
+      await startApp();
+      testApp.gm.addTask(makeTask({ id: 'local-task' }));
+
+      const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fromId: 'local-task',
+          toId: 'remote-task',
+          kind: 'blocks',
+          targetProjectId: 'other-project',
+        }),
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.targetProjectId).toBe('other-project');
+      expect(testApp.gm.calls.linkTask[0]).toEqual({
+        fromId: 'local-task',
+        toId: 'remote-task',
+        kind: 'blocks',
+        targetProjectId: 'other-project',
+      });
+    });
+
+    it('returns 400 if fromId is missing', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toId: 'task-b', kind: 'blocks' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 if toId is missing', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromId: 'task-a', kind: 'blocks' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for invalid kind', async () => {
+      await startApp();
+      const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromId: 'task-a', toId: 'task-b', kind: 'invalid' }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('blocks');
+    });
+
+    it('supports all valid link kinds', async () => {
+      await startApp();
+      testApp.gm.addTask(makeTask({ id: 'from' }));
+
+      for (const kind of ['blocks', 'subtask_of', 'related_to']) {
+        testApp.gm.calls.linkTask = [];
+        const res = await fetch(`${baseUrl}/api/projects/test-project/tasks/link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fromId: 'from', toId: 'to', kind }),
+        });
+        expect(res.status).toBe(200);
+      }
+    });
+  });
+
   // ── GET /api/projects/:id/epics ─────────────────────────────────────
 
   describe('GET /api/projects/:id/epics', () => {

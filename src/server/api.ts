@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task, CrossProjectTask, PipelineRun } from '../core/types.js';
+import type { OrchestratorConfig, DiscoveryConfig, GraphMemoryPort, Task, TaskLinkKind, CrossProjectTask, PipelineRun } from '../core/types.js';
 import { getActiveProject } from '../core/types.js';
 import { collectCrossProjectEpicTasks } from '../core/orchestrator.js';
 import type { RunSnapshot, MultiRunSnapshot } from './runner-service.js';
@@ -220,6 +220,56 @@ export function createApiRouter(deps: ApiDeps): Router {
       if (req.query['limit']) opts.limit = Number(req.query['limit']);
       const tasks = await client.listTasks(opts as Parameters<GraphMemoryPort['listTasks']>[0]);
       res.json({ tasks });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /api/projects/:id/tasks/link — create a task link (optionally cross-project)
+  router.post('/api/projects/:id/tasks/link', requireSetup, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
+      const { fromId, toId, kind, targetProjectId } = req.body as {
+        fromId?: string;
+        toId?: string;
+        kind?: string;
+        targetProjectId?: string;
+      };
+
+      if (!fromId || typeof fromId !== 'string') {
+        res.status(400).json({ error: 'fromId is required' });
+        return;
+      }
+      if (!toId || typeof toId !== 'string') {
+        res.status(400).json({ error: 'toId is required' });
+        return;
+      }
+      const validKinds: TaskLinkKind[] = ['blocks', 'subtask_of', 'related_to'];
+      if (!kind || !validKinds.includes(kind as TaskLinkKind)) {
+        res.status(400).json({ error: `kind must be one of: ${validKinds.join(', ')}` });
+        return;
+      }
+
+      // Validate targetProjectId if cross-project
+      if (targetProjectId && typeof targetProjectId !== 'string') {
+        res.status(400).json({ error: 'targetProjectId must be a string' });
+        return;
+      }
+
+      const client = resolveClient(projectId);
+      if (!client.linkTask) {
+        res.status(501).json({ error: 'Task linking is not supported by this GraphMemory client' });
+        return;
+      }
+
+      await client.linkTask({
+        fromId,
+        toId,
+        kind: kind as TaskLinkKind,
+        ...(targetProjectId ? { targetProjectId } : {}),
+      });
+
+      res.json({ ok: true, fromId, toId, kind, targetProjectId: targetProjectId ?? null });
     } catch (err) {
       next(err);
     }

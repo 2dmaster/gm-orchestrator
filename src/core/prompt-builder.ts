@@ -22,7 +22,7 @@ import type { Task } from './types.js';
  * 5. MINIMAL PROMPT — only what's needed. The description might be empty
  *    deliberately (Claude fetches full context via tasks_get). Don't pad.
  */
-export function buildPrompt(task: Task, config: { projectId: string }): string {
+export function buildPrompt(task: Task, config: { projectId: string; runId?: string }): string {
   const sections: string[] = [];
 
   sections.push(`# Autonomous Task Execution`);
@@ -37,6 +37,18 @@ export function buildPrompt(task: Task, config: { projectId: string }): string {
 
   sections.push(`## Execution Protocol`);
   sections.push(buildProtocol(task));
+
+  if (config.runId) {
+    sections.push(`## Idempotency Guard`);
+    sections.push(
+      `This session's run ID is \`${config.runId}\`.\n` +
+      `Before making any destructive changes (file writes, git commits, task status moves), ` +
+      `call \`tasks_get("${task.id}")\` and compare \`metadata.runId\` to your run ID.\n` +
+      `If they do **not** match, another session has taken over — **exit immediately** ` +
+      `without touching anything.\n` +
+      `Your run ID is also available as the \`ORCHESTRATOR_RUN_ID\` environment variable.`
+    );
+  }
 
   if (task.blockedBy?.length) {
     sections.push(`## Resolved Blockers (for context)`);

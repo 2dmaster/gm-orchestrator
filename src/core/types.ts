@@ -5,6 +5,7 @@
 export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type EpicStatus = 'open' | 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type TaskLinkKind = 'blocks' | 'subtask_of' | 'related_to' | 'prefers_after';
 
 export interface TaskRef {
   id: string;
@@ -32,6 +33,9 @@ export interface Task {
   blockedBy?: TaskRef[];
   blocks?: TaskRef[];
   related?: TaskRef[];
+  prefersAfter?: TaskRef[];
+  // Arbitrary metadata (heartbeat, run tracking, etc.)
+  metadata?: Record<string, unknown>;
 }
 
 export interface Epic {
@@ -124,11 +128,17 @@ export interface OrchestratorConfig {
   // Server discovery
   discovery?: DiscoveryConfig;
 
+  // Heartbeat / crash recovery
+  heartbeat?: HeartbeatConfig;
+
   // Persisted last run — allows restart/continue after process restart
   lastRun?: LastRunState | undefined;
 
   // Pipeline definitions for cross-project orchestration
   pipelines?: Pipeline[];
+
+  // Post-task verification hooks
+  postTaskHooks?: PostTaskHook[];
 }
 
 /** Persisted in config so restart survives process restarts. */
@@ -206,6 +216,65 @@ export interface PipelineRun {
   completedAt?: number;
 }
 
+// ─── Post-Task Hook Types ────────────────────────────────────────────────
+
+/**
+ * A verification command that runs after a task is marked done.
+ * Executes in the orchestrator process, not inside the spawned Claude session.
+ */
+export interface PostTaskHook {
+  /** Human-readable name for logging (e.g. "make-verify"). */
+  name: string;
+  /** Shell command to execute (e.g. "make verify", "npm test"). */
+  command: string;
+  /** Working directory for the command. Defaults to process.cwd(). */
+  cwd?: string;
+  /** Timeout in ms. Default 600_000 (10 minutes). */
+  timeoutMs?: number;
+  /** What to do when the hook fails: 'block' halts the sprint, 'warn' logs and continues. */
+  onFailure: 'block' | 'warn';
+}
+
+/** Result of executing a single post-task hook command. */
+export interface HookExecResult {
+  success: boolean;
+  exitCode: number;
+  /** Last N lines of stdout. */
+  stdout: string;
+  /** Last N lines of stderr. */
+  stderr: string;
+}
+
+/**
+ * Abstracts executing shell commands for post-task hooks.
+ * Swap for a fake in tests.
+ */
+export interface HookRunnerPort {
+  exec(hook: PostTaskHook): Promise<HookExecResult>;
+}
+
+// ─── Heartbeat / Crash Recovery Types ─────────────────────────────────────
+
+export type ZombiePolicy = 'reset-to-todo' | 'move-to-review' | 'cancel';
+
+export interface HeartbeatConfig {
+  /** How often to update heartbeat_at (ms). Default 30_000 (30s). */
+  intervalMs: number;
+  /** How long since last heartbeat before a task is considered zombie (ms). Default 2× intervalMs. */
+  staleThresholdMs: number;
+  /** What to do with zombie tasks on startup. Default 'reset-to-todo'. */
+  zombiePolicy: ZombiePolicy;
+}
+
+/**
+ * Metadata stored on a task to track the active run.
+ * Written to task description metadata section (JSON block).
+ */
+export interface TaskHeartbeatMeta {
+  runId: string;
+  heartbeatAt: number;
+}
+
 // ─── Run Result Types ─────────────────────────────────────────────────────
 
 export type TaskRunResult =
@@ -214,7 +283,8 @@ export type TaskRunResult =
   | 'timeout'
   | 'error'
   | 'dry_run'
-  | 'blocked';
+  | 'blocked'
+  | 'verify_failed';
 
 export interface SprintStats {
   done: number;
@@ -281,6 +351,19 @@ export interface GraphMemoryPort {
    * can leave this undefined.
    */
   getTaskStatus?(taskId: string): Promise<TaskStatus>;
+
+  /**
+   * Create a link between two tasks. When `targetProjectId` is provided,
+   * the `toId` task lives in a different project (cross-project link).
+   * Optional: implementations that don't support link creation can leave
+   * this undefined.
+   */
+  linkTask?(opts: {
+    fromId: string;
+    toId: string;
+    kind: TaskLinkKind;
+    targetProjectId?: string;
+  }): Promise<void>;
 }
 
 /**
@@ -288,7 +371,7 @@ export interface GraphMemoryPort {
  * Swap for a mock in tests.
  */
 export interface ClaudeRunnerPort {
-  run(task: Task, config: OrchestratorConfig): Promise<void>;
+  run(task: Task, config: OrchestratorConfig, runId: string): Promise<void>;
 }
 
 /**

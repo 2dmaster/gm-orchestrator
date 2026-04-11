@@ -54,6 +54,7 @@ export interface RunnerServiceDeps {
   resolveGm?: (projectId: string) => GraphMemoryPort;
   resolvePoller?: (projectId: string) => TaskPollerPort;
   saveConfig?: (config: Partial<OrchestratorConfig>) => void;
+  hookRunner?: import('../core/types.js').HookRunnerPort;
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -290,6 +291,7 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
       createPoller: (projectId) => deps.resolvePoller ? deps.resolvePoller(projectId) : deps.poller,
       logger: createWsLogger(''),
       createLogger: (projectId) => createWsLogger(projectId),
+      ...(deps.hookRunner ? { hookRunner: deps.hookRunner } : {}),
     }, {
       onSlotStarted: (slotId, request) => {
         logger.info(`Scheduler: slot ${slotId} started ${request.mode} for project "${request.projectId}"`);

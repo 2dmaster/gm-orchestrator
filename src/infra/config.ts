@@ -107,8 +107,10 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.discovery !== undefined) result.discovery = cfg.discovery;
     if (cfg.maxTurns !== undefined) result.maxTurns = cfg.maxTurns;
     if (cfg.agentTimeoutMs !== undefined) result.agentTimeoutMs = cfg.agentTimeoutMs;
+    if (cfg.heartbeat !== undefined) result.heartbeat = cfg.heartbeat;
     if (cfg.lastRun !== undefined) result.lastRun = cfg.lastRun;
     if (cfg.pipelines !== undefined) result.pipelines = cfg.pipelines;
+    if (cfg.postTaskHooks !== undefined) result.postTaskHooks = cfg.postTaskHooks;
   }
 
   return result;

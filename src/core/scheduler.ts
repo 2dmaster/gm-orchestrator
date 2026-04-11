@@ -2,6 +2,7 @@ import type {
   GraphMemoryPort,
   ClaudeRunnerPort,
   TaskPollerPort,
+  HookRunnerPort,
   OrchestratorConfig,
   SprintStats,
   Task,
@@ -56,6 +57,8 @@ export interface SchedulerPorts {
   createLogger?: (projectId: string) => Logger;
   /** Optional resolver for cross-project blocker dependencies. */
   crossProjectResolver?: CrossProjectResolver;
+  /** Optional hook runner for post-task verification. Shared across all slots. */
+  hookRunner?: HookRunnerPort;
 }
 
 export interface SchedulerEvents {
@@ -307,6 +310,7 @@ export function createScheduler(
       logger: slotLogger,
       signal: slot.abort.signal,
       ...(ports.crossProjectResolver ? { crossProjectResolver: ports.crossProjectResolver } : {}),
+      ...(ports.hookRunner ? { hookRunner: ports.hookRunner } : {}),
     };
 
     let promise: Promise<SprintStats>;
