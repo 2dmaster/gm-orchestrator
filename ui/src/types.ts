@@ -74,6 +74,7 @@ export interface OrchestratorConfig {
   model?: string;
   maxTurns: number;
   agentTimeoutMs: number;
+  agentStuckRetries?: number;
   tag?: string;
 }
 

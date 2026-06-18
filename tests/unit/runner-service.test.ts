@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createRunnerService, type RunnerServiceDeps } from '../../src/server/runner-service.js';
+import { createRunnerService, decideInactivityAction, type RunnerServiceDeps } from '../../src/server/runner-service.js';
 import type {
   OrchestratorConfig,
   GraphMemoryPort,
@@ -279,5 +279,25 @@ describe('RunnerService', () => {
       await svc.stop(); // should not throw
       expect(svc.isRunning).toBe(false);
     });
+  });
+});
+
+describe('decideInactivityAction', () => {
+  it('resumes the same session when one was captured and budget remains', () => {
+    expect(decideInactivityAction({ attempt: 0, stuckRetries: 2, hasSession: true })).toBe('resume');
+    expect(decideInactivityAction({ attempt: 1, stuckRetries: 2, hasSession: true })).toBe('resume');
+  });
+
+  it('restarts fresh when no session id was captured (agent never started)', () => {
+    expect(decideInactivityAction({ attempt: 0, stuckRetries: 2, hasSession: false })).toBe('restart');
+  });
+
+  it('gives up once the recovery budget is exhausted', () => {
+    expect(decideInactivityAction({ attempt: 2, stuckRetries: 2, hasSession: true })).toBe('giveup');
+    expect(decideInactivityAction({ attempt: 3, stuckRetries: 2, hasSession: false })).toBe('giveup');
+  });
+
+  it('gives up immediately when stuckRetries is 0', () => {
+    expect(decideInactivityAction({ attempt: 0, stuckRetries: 0, hasSession: true })).toBe('giveup');
   });
 });

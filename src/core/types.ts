@@ -120,7 +120,8 @@ export interface OrchestratorConfig {
 
   // Agent SDK safety
   maxTurns: number;           // max SDK turns per task (default 200)
-  agentTimeoutMs: number;     // inactivity watchdog — abort if no events for this long (default 120_000)
+  agentTimeoutMs: number;     // inactivity watchdog — interrupt if no events for this long (default 120_000)
+  agentStuckRetries?: number; // in-session resume attempts when the agent stalls (default 2)
 
   // Sprint/Epic scope
   tag?: string;

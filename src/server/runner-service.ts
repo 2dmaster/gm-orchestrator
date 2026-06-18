@@ -25,6 +25,30 @@ import type { Scheduler } from '../core/scheduler.js';
 
 const MAX_LOG_BUFFER = 200;
 
+/**
+ * Decide how to recover a task whose agent went inactive (no SDK events for
+ * `agentTimeoutMs`). Pure so it can be unit-tested.
+ *
+ * - `resume`  — interrupt and continue the SAME session (preferred; preserves
+ *               context, mirrors a manual "esc + continue").
+ * - `restart` — no session id captured yet (agent never really started), so a
+ *               fresh session is the only option.
+ * - `giveup`  — recovery budget exhausted; leave the task for the per-task
+ *               timeout/retry path.
+ *
+ * @param attempt       recoveries already performed (0 on first stall)
+ * @param stuckRetries  max in-session recoveries before giving up
+ * @param hasSession    whether a session id was captured from the stream
+ */
+export function decideInactivityAction(opts: {
+  attempt: number;
+  stuckRetries: number;
+  hasSession: boolean;
+}): 'resume' | 'restart' | 'giveup' {
+  if (opts.attempt >= opts.stuckRetries) return 'giveup';
+  return opts.hasSession ? 'resume' : 'restart';
+}
+
 export interface RunSnapshot {
   projectId: string | null;
   activeTask: Task | null;
@@ -130,24 +154,35 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
         };
 
         let turnCount = 0;
+        let sessionId: string | undefined;
+        let attempt = 0; // inactivity recoveries performed so far
 
-        // Inactivity watchdog
-        let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
-        let watchdogWarned = false;
         const watchdogMs = config.agentTimeoutMs;
         const warningMs = Math.max(Math.floor(watchdogMs * 0.6), 30_000);
+        const stuckRetries = config.agentStuckRetries ?? 2;
 
-        // Find the abort controller for this project's slot
+        // The slot abort controller is the user "Stop" signal (whole run).
+        // The inactivity watchdog does NOT use it — it interrupts only the
+        // current SDK call and resumes the same session, so a single stuck
+        // task no longer kills the entire project run.
         const slotAbort = scheduler?.slots.find(
           (s) => s.status === 'running' && s.projectId === pid,
         )?.abort;
 
-        function resetWatchdog(): void {
-          watchdogWarned = false;
-          if (watchdogTimer) clearTimeout(watchdogTimer);
-          watchdogTimer = setTimeout(() => {
-            if (!watchdogWarned) {
-              watchdogWarned = true;
+        // Each iteration is one SDK attempt. On inactivity we interrupt and
+        // resume the same session (up to `stuckRetries`) — the automated
+        // equivalent of a manual "esc + continue".
+        for (;;) {
+          const localAbort = new AbortController();
+          let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+          let inactivityFired = false;
+
+          const onSlotAbort = (): void => localAbort.abort();
+          slotAbort?.signal.addEventListener('abort', onSlotAbort, { once: true });
+
+          const resetWatchdog = (): void => {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            watchdogTimer = setTimeout(() => {
               emit({
                 type: 'agent:warning',
                 payload: {
@@ -157,25 +192,29 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
                 },
               });
               watchdogTimer = setTimeout(() => {
+                inactivityFired = true;
                 emit({
                   type: 'agent:warning',
                   payload: {
                     taskId: task.id,
-                    message: `Agent inactive for ${Math.round(watchdogMs / 1000)}s — aborting task`,
+                    message: `Agent inactive for ${Math.round(watchdogMs / 1000)}s — interrupting`,
                     projectId: pid,
                   },
                 });
-                slotAbort?.abort();
+                localAbort.abort();
               }, watchdogMs - warningMs);
-            }
-          }, warningMs);
-        }
+            }, warningMs);
+          };
 
-        resetWatchdog();
+          const isResume = attempt > 0 && sessionId !== undefined;
+          const turnPrompt = isResume
+            ? 'You appear to have stalled mid-task. Continue from where you left off — do not restart from scratch. When the task is complete, mark it done in GraphMemory as instructed.'
+            : prompt;
 
-        try {
+          resetWatchdog();
+          try {
         for await (const message of query({
-          prompt,
+          prompt: turnPrompt,
           options: {
             cwd: process.cwd(),
             permissionMode: 'bypassPermissions',
@@ -184,11 +223,14 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
             mcpServers,
             settingSources: ['project'],
             ...(config.model ? { model: config.model } : {}),
-            ...(slotAbort?.signal ? { abortSignal: slotAbort.signal } : {}),
+            ...(isResume && sessionId ? { resume: sessionId } : {}),
+            abortController: localAbort,
           },
         })) {
           resetWatchdog();
           const msg = message as Record<string, unknown>;
+          const sid = msg['session_id'] as string | undefined;
+          if (sid) sessionId = sid;
           const msgType = msg.type as string | undefined;
 
           if (msgType === 'result') {
@@ -259,8 +301,47 @@ export function createRunnerService(deps: RunnerServiceDeps): RunnerService {
             continue;
           }
         }
-        } finally {
-          if (watchdogTimer) clearTimeout(watchdogTimer);
+          } catch (err) {
+            // Our own inactivity interrupt is handled below; anything else
+            // (user "Stop" via slotAbort, or a real SDK error) propagates.
+            if (!inactivityFired) throw err;
+          } finally {
+            if (watchdogTimer) clearTimeout(watchdogTimer);
+            slotAbort?.signal.removeEventListener('abort', onSlotAbort);
+          }
+
+          if (!inactivityFired) return; // completed normally
+
+          const action = decideInactivityAction({
+            attempt,
+            stuckRetries,
+            hasSession: sessionId !== undefined,
+          });
+          if (action === 'giveup') {
+            emit({
+              type: 'agent:warning',
+              payload: {
+                taskId: task.id,
+                message: `Agent still stuck after ${attempt} recovery attempt(s) — leaving task to time out`,
+                projectId: pid,
+              },
+            });
+            return; // poller hits timeoutMs → orchestrator retry path
+          }
+
+          attempt++;
+          emit({
+            type: 'agent:warning',
+            payload: {
+              taskId: task.id,
+              message:
+                action === 'resume'
+                  ? `Resuming stalled session (recovery ${attempt}/${stuckRetries})`
+                  : `Restarting stalled task (recovery ${attempt}/${stuckRetries})`,
+              projectId: pid,
+            },
+          });
+          // loop continues → next attempt
         }
       },
     };
