@@ -16,6 +16,7 @@ const DEFAULTS: OrchestratorConfig = {
   dryRun: false,
   maxTurns: 200,
   agentTimeoutMs: 120_000,
+  agentStuckRetries: 2,
 };
 
 /**
@@ -107,6 +108,7 @@ function mergeConfigs(...configs: Partial<OrchestratorConfig>[]): OrchestratorCo
     if (cfg.discovery !== undefined) result.discovery = cfg.discovery;
     if (cfg.maxTurns !== undefined) result.maxTurns = cfg.maxTurns;
     if (cfg.agentTimeoutMs !== undefined) result.agentTimeoutMs = cfg.agentTimeoutMs;
+    if (cfg.agentStuckRetries !== undefined) result.agentStuckRetries = cfg.agentStuckRetries;
     if (cfg.heartbeat !== undefined) result.heartbeat = cfg.heartbeat;
     if (cfg.lastRun !== undefined) result.lastRun = cfg.lastRun;
     if (cfg.pipelines !== undefined) result.pipelines = cfg.pipelines;
