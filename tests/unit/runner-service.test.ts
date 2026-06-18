@@ -54,7 +54,7 @@ function makeDeps(overrides: Partial<RunnerServiceDeps> = {}): RunnerServiceDeps
       updatedAt: '2024-01-01',
     }),
     listEpicTasks: vi.fn().mockResolvedValue([task]),
-    listEpics: vi.fn().mockResolvedValue([]),
+    listEpics: vi.fn().mockResolvedValue({ results: [], total: 0 }),
     moveEpic: vi.fn().mockResolvedValue(undefined),
   };
 

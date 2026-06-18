@@ -220,13 +220,13 @@ async function main(): Promise<void> {
       gm.listTasks({ status: 'in_progress' }),
       gm.listTasks({ status: 'done' }),
     ]);
-    const epics = await gm.listEpics().catch(() => []);
+    const { total: epicCount } = await gm.listEpics().catch(() => ({ results: [], total: 0 }));
 
     consoleLogger.section(`Status — ${activeProj?.projectId ?? '(none)'}`);
     console.log(`  todo:        ${todo.length}`);
     console.log(`  in_progress: ${inProgress.length}`);
     console.log(`  done:        ${done.length}`);
-    console.log(`  epics:       ${epics.length}`);
+    console.log(`  epics:       ${epicCount}`);
 
     if (todo.length) {
       consoleLogger.section('Next up');

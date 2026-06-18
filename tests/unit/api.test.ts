@@ -362,6 +362,62 @@ describe('API routes', () => {
 
       expect(res.status).toBe(200);
       expect(body.epics).toHaveLength(1);
+      expect(body.total).toBe(1);
+    });
+
+    it('paginates with limit + offset and reports total', async () => {
+      await startApp();
+      for (let i = 0; i < 5; i++) {
+        testApp.gm.addEpic(makeEpic({ id: `e${i}`, title: `Epic ${i}` }));
+      }
+
+      const res = await fetch(`${baseUrl}/api/projects/test-project/epics?limit=2&offset=2`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.total).toBe(5);
+      expect(body.epics).toHaveLength(2);
+      expect(body.epics.map((e: { id: string }) => e.id)).toEqual(['e2', 'e3']);
+    });
+
+    it('filters by multiple comma-separated statuses', async () => {
+      await startApp();
+      testApp.gm.addEpic(makeEpic({ id: 'e-open', status: 'open' }));
+      testApp.gm.addEpic(makeEpic({ id: 'e-prog', status: 'in_progress' }));
+      testApp.gm.addEpic(makeEpic({ id: 'e-done', status: 'done' }));
+      testApp.gm.addEpic(makeEpic({ id: 'e-cancel', status: 'cancelled' }));
+
+      const res = await fetch(`${baseUrl}/api/projects/test-project/epics?status=open,in_progress`);
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.total).toBe(2);
+      expect(body.epics.map((e: { id: string }) => e.id).sort()).toEqual(['e-open', 'e-prog']);
+    });
+  });
+
+  // ── GET /api/models ─────────────────────────────────────────────────
+
+  describe('GET /api/models', () => {
+    it('returns a non-empty curated model list with a default-capable shape', async () => {
+      // Unset any API key so the endpoint stays hermetic (no live network call).
+      const savedKey = process.env['ANTHROPIC_API_KEY'];
+      delete process.env['ANTHROPIC_API_KEY'];
+      try {
+        await startApp();
+
+        const res = await fetch(`${baseUrl}/api/models`);
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(Array.isArray(body.models)).toBe(true);
+        expect(body.models.length).toBeGreaterThan(0);
+        expect(body.models[0]).toHaveProperty('id');
+        expect(body.models[0]).toHaveProperty('label');
+        expect(body.source).toBe('curated');
+      } finally {
+        if (savedKey !== undefined) process.env['ANTHROPIC_API_KEY'] = savedKey;
+      }
     });
   });
 
