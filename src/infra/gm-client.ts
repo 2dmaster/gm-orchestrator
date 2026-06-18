@@ -103,11 +103,32 @@ export class GraphMemoryClient implements GraphMemoryPort {
   async listEpics({
     status,
     limit = 50,
-  }: { status?: EpicStatus; limit?: number } = {}): Promise<Epic[]> {
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (status) params.set('status', status);
-    const data = await this.get<{ results: Epic[] }>(`/epics?${params}`);
-    return data.results ?? [];
+    offset = 0,
+  }: { status?: EpicStatus | EpicStatus[]; limit?: number; offset?: number } = {}): Promise<{ results: Epic[]; total: number }> {
+    const statuses = Array.isArray(status) ? status : status ? [status] : [];
+
+    // Single (or no) status filter — let GraphMemory paginate directly.
+    if (statuses.length <= 1) {
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (statuses[0]) params.set('status', statuses[0]);
+      const data = await this.get<{ results: Epic[]; total?: number }>(`/epics?${params}`);
+      const results = data.results ?? [];
+      return { results, total: data.total ?? results.length };
+    }
+
+    // Multiple statuses (e.g. open + in_progress): GraphMemory only accepts one
+    // status per request, so fetch each in parallel, merge, then page locally.
+    const perStatus = await Promise.all(
+      statuses.map(async (s) => {
+        const params = new URLSearchParams({ limit: '500', status: s });
+        const data = await this.get<{ results: Epic[]; total?: number }>(`/epics?${params}`);
+        const results = data.results ?? [];
+        return { results, total: data.total ?? results.length };
+      })
+    );
+    const merged = perStatus.flatMap((p) => p.results);
+    const total = perStatus.reduce((sum, p) => sum + p.total, 0);
+    return { results: merged.slice(offset, offset + limit), total };
   }
 
   async moveEpic(epicId: string, status: EpicStatus): Promise<void> {

@@ -376,7 +376,7 @@ export interface GraphMemoryPort {
   updateTask(taskId: string, fields: Partial<Task>): Promise<void>;
   getEpic(epicId: string): Promise<Epic>;
   listEpicTasks(epicId: string): Promise<Task[]>;
-  listEpics(opts?: { status?: EpicStatus; limit?: number }): Promise<Epic[]>;
+  listEpics(opts?: { status?: EpicStatus | EpicStatus[]; limit?: number; offset?: number }): Promise<{ results: Epic[]; total: number }>;
   moveEpic(epicId: string, status: EpicStatus): Promise<void>;
 
   /**

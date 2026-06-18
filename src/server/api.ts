@@ -63,6 +63,43 @@ export interface ApiDeps {
   version?: string;
 }
 
+// ─── Models ─────────────────────────────────────────────────────────────
+
+export interface ModelOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * Curated, current Claude model list — the source of truth when no Anthropic
+ * API key is configured (the orchestrator is tokenless by default and drives
+ * Claude via the Agent SDK / CLI). Update here, not in the UI bundle.
+ */
+const DEFAULT_MODELS: ModelOption[] = [
+  { id: 'claude-opus-4-8', label: 'Opus 4.8' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+];
+
+/**
+ * Fetch the live model list from the Anthropic Models API when an API key is
+ * available. Returns null on any failure so callers fall back to DEFAULT_MODELS.
+ */
+async function fetchAnthropicModels(apiKey: string): Promise<ModelOption[] | null> {
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { data?: Array<{ id: string; display_name?: string }> };
+    const models = (data.data ?? []).map((m) => ({ id: m.id, label: m.display_name ?? m.id }));
+    return models.length > 0 ? models : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Router factory ─────────────────────────────────────────────────────
 
 export function createApiRouter(deps: ApiDeps): Router {
@@ -95,6 +132,21 @@ export function createApiRouter(deps: ApiDeps): Router {
       lastRun: deps.runner.getLastRun() ?? null,
       ...(snapshot ? { run: snapshot } : {}),
     });
+  });
+
+  // GET /api/models — available Claude models (live when an API key is set, curated otherwise)
+  router.get('/api/models', async (_req: Request, res: Response) => {
+    const apiKey = process.env['ANTHROPIC_API_KEY'];
+    let models = DEFAULT_MODELS;
+    let source: 'live' | 'curated' = 'curated';
+    if (apiKey) {
+      const live = await fetchAnthropicModels(apiKey);
+      if (live) {
+        models = live;
+        source = 'live';
+      }
+    }
+    res.json({ models, source });
   });
 
   // GET /api/projects
@@ -280,11 +332,16 @@ export function createApiRouter(deps: ApiDeps): Router {
     try {
       const projectId = Array.isArray(req.params['id']) ? req.params['id'][0]! : req.params['id']!;
       const client = resolveClient(projectId);
-      const opts: { status?: string; limit?: number } = {};
-      if (req.query['status']) opts.status = req.query['status'] as string;
+      const opts: { status?: string | string[]; limit?: number; offset?: number } = {};
+      if (req.query['status']) {
+        const raw = req.query['status'] as string;
+        // Comma-separated statuses (e.g. "open,in_progress") → array.
+        opts.status = raw.includes(',') ? raw.split(',').filter(Boolean) : raw;
+      }
       if (req.query['limit']) opts.limit = Number(req.query['limit']);
-      const epics = await client.listEpics(opts as Parameters<GraphMemoryPort['listEpics']>[0]);
-      res.json({ epics });
+      if (req.query['offset']) opts.offset = Number(req.query['offset']);
+      const { results, total } = await client.listEpics(opts as Parameters<GraphMemoryPort['listEpics']>[0]);
+      res.json({ epics: results, total });
     } catch (err) {
       next(err);
     }

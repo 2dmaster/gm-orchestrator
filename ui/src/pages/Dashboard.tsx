@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen, CheckSquare, Cpu } from "lucide-react";
+import { Play, Loader2, Globe, ChevronDown, ChevronRight, Server, AlertCircle, Inbox, FolderOpen, CheckSquare, Cpu, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,13 +13,15 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useTasks } from "../hooks/useTasks";
+import { useEpics } from "../hooks/useEpics";
+import { useModels } from "../hooks/useModels";
 import { useOrchestrator } from "../hooks/useOrchestrator";
 import { useProjectsOverview } from "../hooks/useProjectsOverview";
 import Shell from "../components/Shell";
 import TaskRow from "../components/TaskRow";
 import EpicCard from "../components/EpicCard";
 import PipelineSection from "../components/PipelineSection";
-import type { Epic, Task, ProjectOverview } from "../types";
+import type { Task, ProjectOverview } from "../types";
 
 const PRIORITY_ORDER: Record<string, number> = {
   critical: 0,
@@ -31,38 +33,6 @@ const PRIORITY_ORDER: Record<string, number> = {
 const MAX_VISIBLE_TASKS = 5;
 const CLOSED_STATUSES = ["done", "cancelled"];
 
-const MODEL_OPTIONS: Record<string, string> = {
-  "default": "Default model",
-  "claude-sonnet-4-6": "Sonnet 4.6",
-  "claude-opus-4-6": "Opus 4.6",
-  "claude-haiku-4-5-20251001": "Haiku 4.5",
-};
-
-function useEpics(projectId: string | null) {
-  const [epics, setEpics] = useState<Epic[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-
-  const fetchEpics = useCallback(async () => {
-    if (!projectId) return;
-    setIsLoading(true);
-    try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/epics`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { epics: Epic[] };
-      setEpics(data.epics);
-    } catch {
-      // non-critical
-    } finally {
-      setIsLoading(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    fetchEpics();
-  }, [fetchEpics]);
-
-  return { epics, isLoading };
-}
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -152,20 +122,27 @@ interface ProjectDetailProps {
 function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps) {
   const ws = useWebSocket();
   const { tasks, isLoading: tasksLoading } = useTasks(projectId, ws);
-  const { epics, isLoading: epicsLoading } = useEpics(projectId);
+  const [showClosedEpics, setShowClosedEpics] = useState(false);
+  // When the closed filter is off, ask the server for active epics only —
+  // otherwise paginated pages could be all-closed and hide active work.
+  const epicStatusFilter = showClosedEpics ? undefined : "open,in_progress";
+  const {
+    epics,
+    total: epicsTotal,
+    hasMore: hasMoreEpics,
+    isLoading: epicsLoading,
+    isLoadingMore: epicsLoadingMore,
+    loadMore: loadMoreEpics,
+    refetch: refetchEpics,
+  } = useEpics(projectId, ws, epicStatusFilter);
   const [selectedEpicId, setSelectedEpicId] = useState("");
   const [showAllTasks, setShowAllTasks] = useState(false);
-  const [showClosedEpics, setShowClosedEpics] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [selectedModel, setSelectedModel] = useState("default");
+  const modelOptions = useModels();
 
-  const visibleEpics = useMemo(
-    () =>
-      showClosedEpics
-        ? epics
-        : epics.filter((e) => !CLOSED_STATUSES.includes(e.status)),
-    [epics, showClosedEpics]
-  );
+  // Epics are filtered server-side (by epicStatusFilter), so render them as-is.
+  const visibleEpics = epics;
 
   // Reset selected epic if it's no longer in the visible list (e.g. after toggling filter)
   useEffect(() => {
@@ -180,11 +157,6 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
     for (const e of visibleEpics) map[e.id] = e.title;
     return map;
   }, [visibleEpics]);
-
-  const closedEpicCount = useMemo(
-    () => epics.filter((e) => CLOSED_STATUSES.includes(e.status)).length,
-    [epics]
-  );
 
   const sortedTasks = useMemo(
     () =>
@@ -294,7 +266,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
           <Select
-            items={MODEL_OPTIONS}
+            items={modelOptions}
             value={selectedModel}
             onValueChange={(val: string | null) => setSelectedModel(val ?? "default")}
             disabled={orchestrator.isProjectRunning(projectId)}
@@ -304,7 +276,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
               <SelectValue placeholder="Default model" />
             </SelectTrigger>
             <SelectContent alignItemWithTrigger={false}>
-              {Object.entries(MODEL_OPTIONS).map(([value, label]) => (
+              {Object.entries(modelOptions).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
                   {label}
                 </SelectItem>
@@ -465,7 +437,7 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
             <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
               Epics
             </CardTitle>
-            {closedEpicCount > 0 && (
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
                 <Switch
                   size="sm"
@@ -473,10 +445,21 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
                   onCheckedChange={(checked: boolean) => setShowClosedEpics(checked)}
                 />
                 <Label className="text-xs text-muted-foreground cursor-pointer" onClick={() => setShowClosedEpics((prev) => !prev)}>
-                  Show closed ({closedEpicCount})
+                  Show closed
                 </Label>
               </div>
-            )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground"
+                onClick={() => refetchEpics()}
+                disabled={epicsLoading}
+                title="Refresh epics"
+                aria-label="Refresh epics"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${epicsLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-2">
             {epicsLoading && epics.length === 0 ? (
@@ -509,6 +492,22 @@ function ProjectDetail({ projectId, orchestrator, navigate }: ProjectDetailProps
                   }}
                 />
               ))
+            )}
+            {hasMoreEpics && (
+              <div className="pt-2 flex flex-col items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => loadMoreEpics()}
+                  disabled={epicsLoadingMore}
+                >
+                  {epicsLoadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Load more
+                </Button>
+                <span className="text-[11px] text-muted-foreground">
+                  {epics.length} of {epicsTotal} loaded
+                </span>
+              </div>
             )}
           </CardContent>
         </Card>

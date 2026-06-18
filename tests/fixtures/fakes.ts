@@ -86,10 +86,14 @@ export class FakeGraphMemory implements GraphMemoryPort {
 
   async listEpics({
     status,
-  }: { status?: EpicStatus; limit?: number } = {}): Promise<Epic[]> {
-    return [...this.epics.values()].filter(
-      (e) => !status || e.status === status
+    limit = 50,
+    offset = 0,
+  }: { status?: EpicStatus | EpicStatus[]; limit?: number; offset?: number } = {}): Promise<{ results: Epic[]; total: number }> {
+    const statuses = Array.isArray(status) ? status : status ? [status] : [];
+    const all = [...this.epics.values()].filter(
+      (e) => statuses.length === 0 || statuses.includes(e.status)
     );
+    return { results: all.slice(offset, offset + limit), total: all.length };
   }
 
   async moveEpic(epicId: string, status: EpicStatus): Promise<void> {
