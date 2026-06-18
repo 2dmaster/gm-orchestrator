@@ -1,0 +1,1 @@
+{"ts":"2026-04-11T14:57:18.508Z","op":"created","id":"dba08ca9-ace1-4c6d-a58d-641acd5b390c","title":"Decision: verify-failed tasks → cancelled + auto-verify-failed tag","tags":["decision","post-task-hooks","verify-failed","v0.12.0"],"createdAt":1775919438508}
